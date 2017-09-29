@@ -13,17 +13,17 @@ import random
 
 length = 784
 input_size = 1
-rnn_dim = 128
+rnn_dim = 512
 num_layers = 2
 num_classes = 2
 batch_size = 32
 valid_batch_size = 32
-num_epochs = 15
+num_epochs = 20
 lr = 0.0001
 n_words=2
 maxlen=785
-dataset='/data/lisatmp4/kenan/datasets/binarized_mnist/structured/train.txt'
-valid_dataset='/data/lisatmp4/kenan/datasets/binarized_mnist/structured/test.txt'
+dataset='/data/lisatmp4/kenan/dataset/binarized_mnist/structured/train.txt'
+valid_dataset='/data/lisatmp4/kenan/dataset/binarized_mnist/structured/test.txt'
 dictionary='dict_bin_mnist.npz'
 sequence_length = 28
 truncate_length = 10
@@ -31,7 +31,7 @@ attn_every_k = 10
 
 
 
-file_name = 'mnist_logs/mnist_trun_len_' + str(truncate_length) + '_full_attn' + str(random.randint(1000,9999)) + '.txt'
+file_name = 'mnist_logs/mnist_lstm_' + str(random.randint(1000,9999)) + '.txt'
 
 
 train = TextIterator(dataset,
@@ -57,6 +57,8 @@ opt = torch.optim.Adam(rnn.parameters(), lr=lr)
 
 def evaluate_valid(valid):
     valid_loss = []
+    valid_acc = []
+    i = 0
     for x in valid:
         x = numpy.asarray(x, dtype=numpy.float32)
         x = torch.from_numpy(x)
@@ -65,13 +67,18 @@ def evaluate_valid(valid):
         images = Variable(x).cuda()
         labels = Variable(y).long().cuda()
         opt.zero_grad()
-        outputs = rnn(images)
+        outputs= rnn(images)
         shp = outputs.size()
         outputs_reshp = outputs.view([shp[0] * shp[1], num_classes])
         labels_reshp = labels.view(shp[0] * shp[1])
         loss = criterion(outputs_reshp, labels_reshp)
+        acc =  (outputs.max(dim=2)[1] - labels).abs().sum()
+        
+        acc = float(acc.data[0]) / (batch_size * 784 )
+        valid_acc.append(acc)
         valid_loss.append(784 * float(loss.data[0]))
-    log_line = 'Epoch [%d/%d], truncate_length: %d,  average Loss: %f, validation ' %(epoch, num_epochs, truncate_length, numpy.asarray(valid_loss).mean())
+        i += 1
+    log_line = 'Epoch [%d/%d],  average Loss: %f, average accuracy %f, validation ' %(epoch, num_epochs,  numpy.asarray(valid_loss).mean(), 1.0 - numpy.asarray(valid_acc).mean())
     print  (log_line)
     with open(file_name, 'a') as f:
         f.write(log_line)
