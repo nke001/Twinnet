@@ -16,16 +16,13 @@ input_size = 1
 rnn_dim = 512
 num_layers = 2
 num_classes = 2
-batch_size = 32
+batch_size = 50
 valid_batch_size = 32
 num_epochs = 20
 lr = 0.0001
 n_words=2
 maxlen=785
-dataset='/data/lisatmp4/kenan/dataset/binarized_mnist/structured/train.txt'
-valid_dataset='/data/lisatmp4/kenan/dataset/binarized_mnist/structured/test.txt'
-dictionary='dict_bin_mnist.npz'
-sequence_length = 28
+dataset = 'bin_mnist.npy'
 truncate_length = 10
 attn_every_k = 10
 
@@ -34,7 +31,7 @@ attn_every_k = 10
 file_name = 'mnist_logs/mnist_lstm_' + str(random.randint(1000,9999)) + '.txt'
 
 
-train = TextIterator(dataset,
+'''train = TextIterator(dataset,
                          dictionary,
                          n_words_source=n_words,
                          batch_size=batch_size,
@@ -46,6 +43,27 @@ valid = TextIterator(valid_dataset,
                          batch_size=valid_batch_size,
                          maxlen=maxlen,
                          minlen=length)
+'''
+data = numpy.load('bin_mnist.npy')
+
+def prepare_data (data, batch_size):
+    train_x = data.item().get('train_set')
+    train_y = data.item().get('train_labels')
+    valid_x = data.item().get('valid_set')
+    valid_y = data.item().get('valid_labels')
+    
+    shp = train_x.shape
+    train_x = train_x.reshape(shp[0]/ batch_size, batch_size, shp[1])
+    shp = train_y.shape
+    train_y = train_y.reshape(shp[0]/ batch_size, batch_size)
+    shp = valid_x.shape
+    valid_x = valid_x.reshape(shp[0]/ batch_size, batch_size, shp[1])
+    shp = valid_y.shape
+    valid_y = valid_y.reshape(shp[0]/ batch_size, batch_size)
+
+    return (train_x, train_y, valid_x, valid_y)
+
+train_x, train_y, valid_x, valid_y = prepare_data(data, batch_size)
 
 
 rnn = RNN_LSTM(input_size, rnn_dim, num_layers, num_classes)
@@ -55,11 +73,13 @@ rnn.cuda()
 criterion = nn.CrossEntropyLoss()
 opt = torch.optim.Adam(rnn.parameters(), lr=lr)
 
-def evaluate_valid(valid):
+def evaluate_valid(valid_x):
     valid_loss = []
     valid_acc = []
     i = 0
-    for x in valid:
+    valid_len = valid_x.shape[0]
+    for i in range(valid_len):
+        x = valid_x[i]
         x = numpy.asarray(x, dtype=numpy.float32)
         x = torch.from_numpy(x)
         x = x.view(x.size()[0], x.size()[1], input_size)
@@ -86,9 +106,10 @@ def evaluate_valid(valid):
 
 for epoch in range(num_epochs):
     i = 0
-    for x in train:
+    train_len = train_x.shape[0]
+    for i in range(train_len):
         t = -time.time()
-
+        x = train_x[i]
         x = numpy.asarray(x, dtype=numpy.float32)
         x = torch.from_numpy(x)
         x = x.view(x.size()[0], x.size()[1], input_size)
@@ -114,7 +135,7 @@ for epoch in range(num_epochs):
 
 
         if (i + 1) % 100 == 0:
-            evaluate_valid(valid)
+            evaluate_valid(valid_x)
 
         i += 1
 
