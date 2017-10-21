@@ -141,7 +141,7 @@ for epoch in range(num_epochs):
 
     # evaluate per epoch
     print '--- Epoch finished ----'
-    evaluate_valid(valid)
+    evaluate_valid(valid_x)
 
 
 
