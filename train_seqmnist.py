@@ -18,8 +18,8 @@ num_layers = 2
 num_classes = 2
 batch_size = 50
 valid_batch_size = 32
-num_epochs = 20
-lr = 0.0001
+num_epochs = 40
+lr = 0.0005
 n_words=2
 maxlen=785
 dataset = 'bin_mnist.npy'
@@ -28,7 +28,7 @@ attn_every_k = 10
 
 
 
-file_name = 'mnist_logs/mnist_lstm_' + str(random.randint(1000,9999)) + '.txt'
+file_name = 'mnist_logs/mnist_lstm_lr_' +  str(lr) + str(random.randint(1000,9999)) + '.txt'
 
 
 '''train = TextIterator(dataset,
@@ -98,7 +98,7 @@ def evaluate_valid(valid_x):
         valid_acc.append(acc)
         valid_loss.append(784 * float(loss.data[0]))
         i += 1
-    log_line = 'Epoch [%d/%d],  average Loss: %f, average accuracy %f, validation ' %(epoch, num_epochs,  numpy.asarray(valid_loss).mean(), 1.0 - numpy.asarray(valid_acc).mean())
+    log_line = 'MNIST generation Epoch [%d/%d],  average Loss: %f, average accuracy %f, validation ' %(epoch, num_epochs,  numpy.asarray(valid_loss).mean(), 1.0 - numpy.asarray(valid_acc).mean())
     print  (log_line)
     with open(file_name, 'a') as f:
         f.write(log_line)

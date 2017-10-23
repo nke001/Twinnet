@@ -26,7 +26,7 @@ class RNN_LSTM(nn.Module):
         for i, input_t in enumerate(x.chunk(x.size(1), dim=1)):
             input_t = input_t.contiguous().view(input_t.size()[0], input_t.size()[-1])
             h_t, c_t = self.lstm1(input_t, (h_t, c_t))
-            outputs += [c_t]
+            outputs += [h_t]
         outputs = torch.stack(outputs, 1).squeeze(2)
         shp=(outputs.size()[0], outputs.size()[1])
         out = outputs.contiguous().view(shp[0] *shp[1] , self.hidden_size)
