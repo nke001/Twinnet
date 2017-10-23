@@ -47,7 +47,8 @@ class RNN_LSTM_twin(nn.Module):
         self.lstm1 = nn.LSTMCell(input_size, hidden_size)
         self.fc = nn.Linear(hidden_size, num_classes)
         self.reverse = reverse
-
+        if not self.reverse:
+            self.ln_hidden = nn.Linear(self.hidden_size, self.hidden_size)
 
     def forward(self, x):
         outputs = []
@@ -65,6 +66,11 @@ class RNN_LSTM_twin(nn.Module):
         out = outputs.contiguous().view(shp[0] *shp[1] , self.hidden_size)
         out = self.fc(out)
         out = out.view(shp[0], shp[1], self.num_classes)
+        if not self.reverse:
+            states_shp = states.size()
+            states_reshp = states.view(states_shp[0] * states_shp[1], states_shp[2])
+            affine_states = self.ln_hidden(states_reshp)
+            states = affine_states.view(states_shp[0], states_shp[1], states_shp[2])
 
         return (out, states)
 

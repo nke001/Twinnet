@@ -164,7 +164,7 @@ for epoch in range(num_epochs):
         t += time.time()
         
         if (step+1) % 10 == 0:
-            log_line = 'Epoch [%d/%d], Step %d, Loss: %f, batch_time: %f \n' %(epoch, num_epochs, step+1, 784 * all_loss.data[0], t)
+            log_line = 'Epoch [%d/%d], Step %d, all Loss: %f,  Loss: %f,  l2 Loss: %f, back Loss: %f, batch_time: %f \n' %(epoch, num_epochs, step+1, 784 * all_loss.data[0], 784 * loss.data[0], l2_loss.data[0], 784 * back_loss.data[0], t)
             print (log_line)
             with open(file_name, 'a') as f:
                 f.write(log_line)
