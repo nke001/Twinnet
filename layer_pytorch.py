@@ -118,6 +118,50 @@ class cond_RNN_LSTM_embed(nn.Module):
 
 
 
+class RNN_LSTM_embed_twin(nn.Module):
+
+    def __init__(self, input_size, embed_size, hidden_size, num_layers, num_classes, reverse=False):
+        super(RNN_LSTM_embed_twin, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.num_classes = num_classes
+        self.lstm1 = nn.LSTMCell(embed_size, hidden_size)
+        self.fc = nn.Linear(hidden_size, num_classes)
+        self.reverse = reverse
+        self.embed_size = embed_size
+        self.embed = nn.Embedding(num_classes, embed_size)
+        self.embed.weight.data.uniform_(-0.1, 0.1)
+
+        if not self.reverse:
+            self.ln_hidden = nn.Linear(self.hidden_size, self.hidden_size)
+
+    def forward(self, x):
+        outputs = []
+        states = []
+        h_t = Variable(torch.zeros(x.size(0), self.hidden_size).cuda())
+        c_t = Variable(torch.zeros(x.size(0), self.hidden_size).cuda())
+        x_embed = self.embed(x.view(x.size()[0] * x.size()[1], 1).long())
+        x_embed = x_embed.view(x.size()[0], x.size()[1], self.embed_size)
+        
+        for i, input_t in enumerate(x_embed.chunk(x_embed.size(1), dim=1)):
+            input_t = input_t.contiguous().view(input_t.size()[0], input_t.size()[-1])
+            h_t, c_t = self.lstm1(input_t, (h_t, c_t))
+            outputs += [h_t]
+            states  += [h_t]
+        outputs = torch.stack(outputs, 1).squeeze(2)
+        states = torch.stack(outputs, 1).squeeze(2)
+        shp=(outputs.size()[0], outputs.size()[1])
+        out = outputs.contiguous().view(shp[0] *shp[1] , self.hidden_size)
+        out = self.fc(out)
+        out = out.view(shp[0], shp[1], self.num_classes)
+        if not self.reverse:
+            states_shp = states.size()
+            states_reshp = states.view(states_shp[0] * states_shp[1], states_shp[2])
+            affine_states = self.ln_hidden(states_reshp)
+            states = affine_states.view(states_shp[0], states_shp[1], states_shp[2])
+
+        return (out, states)
+
 
 
 
