@@ -37,6 +37,90 @@ class RNN_LSTM(nn.Module):
         return out
 
 
+class RNN_LSTM_EMBED(nn.Module):
+
+    def __init__(self, input_size, embed_size, hidden_size, num_layers, num_classes):
+        super(RNN_LSTM_EMBED, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.num_classes = num_classes
+        self.embed_size = embed_size
+        self.lstm1 = nn.LSTMCell(embed_size, hidden_size)
+        self.fc = nn.Linear(hidden_size, num_classes)
+        self.embed = nn.Embedding(num_classes, embed_size)
+        self.embed.weight.data.uniform_(-0.1, 0.1)
+
+    def forward(self, x):
+        outputs = []
+        h_t = Variable(torch.zeros(x.size(0), self.hidden_size).cuda())
+        c_t = Variable(torch.zeros(x.size(0), self.hidden_size).cuda())
+        x_embed = self.embed(x.view(x.size()[0] * x.size()[1], 1).long())
+        x_embed = x_embed.view(x.size()[0], x.size()[1], self.embed_size)
+
+        for i, input_t in enumerate(x_embed.chunk(x.size(1), dim=1)):
+            input_t = input_t.contiguous().view(input_t.size()[0], input_t.size()[-1])
+            h_t, c_t = self.lstm1(input_t, (h_t, c_t))
+            outputs += [h_t]
+        outputs = torch.stack(outputs, 1).squeeze(2)
+
+        shp=(outputs.size()[0], outputs.size()[1])
+        out = outputs.contiguous().view(shp[0] *shp[1] , self.hidden_size)
+        out = self.fc(out)
+        out = out.view(shp[0], shp[1], self.num_classes)
+
+        return out
+
+
+
+class cond_RNN_LSTM_embed(nn.Module):
+
+    def __init__(self, input_size, embed_size, hidden_size, num_layers, num_labels, num_classes):
+        super(cond_RNN_LSTM_embed, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.num_classes = num_classes
+        self.embed_size = embed_size
+        self.num_labels = num_labels
+        self.lstm1 = nn.LSTMCell(embed_size * 2, hidden_size)
+        self.fc = nn.Linear(hidden_size, num_classes)
+        self.embed_x = nn.Embedding(num_classes, embed_size)
+        self.embed_x.weight.data.uniform_(-0.1, 0.1)    
+        self.embed_label = nn.Embedding(num_labels, embed_size)
+        self.embed_label.weight.data.uniform_(-0.1, 0.1)
+
+
+    def forward(self, x):
+        outputs = []
+        h_t = Variable(torch.zeros(x.size(0), self.hidden_size).cuda())
+        c_t = Variable(torch.zeros(x.size(0), self.hidden_size).cuda())
+        x_x = x[:,:,0].contiguous()
+        x_label = x[:,:,1].contiguous()
+
+        
+        x_embed = self.embed_x(x_x.view(x_x.size()[0] * x_x.size()[1], 1).long())
+        x_embed = x_embed.view(x_x.size()[0], x_x.size()[1], self.embed_size)
+        x_label_embed = self.embed_label(x_label.view(x_label.size()[0] * x_label.size()[1], 1).long())
+        x_label_embed = x_label_embed.view(x_label.size()[0], x_label.size()[1], self.embed_size)
+        x_all_ = torch.cat((x_embed, x_label_embed), dim = -1) 
+
+        for i, input_t in enumerate(x_all_.chunk(x_all_.size(1), dim=1)):
+            input_t = input_t.contiguous().view(input_t.size()[0], input_t.size()[-1])
+            h_t, c_t = self.lstm1(input_t, (h_t, c_t))
+            outputs += [h_t]
+        outputs = torch.stack(outputs, 1).squeeze(2)
+
+        shp=(outputs.size()[0], outputs.size()[1])
+        out = outputs.contiguous().view(shp[0] *shp[1] , self.hidden_size)
+        out = self.fc(out)
+        out = out.view(shp[0], shp[1], self.num_classes)
+
+        return out
+
+
+
+
+
+
 class RNN_LSTM_twin(nn.Module):
 
     def __init__(self, input_size, hidden_size, num_layers, num_classes, reverse=False):

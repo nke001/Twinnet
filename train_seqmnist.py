@@ -25,7 +25,7 @@ maxlen=785
 dataset = 'bin_mnist.npy'
 truncate_length = 10
 attn_every_k = 10
-
+embed_size = 256
 
 
 file_name = 'mnist_logs/mnist_lstm_lr_' +  str(lr) + str(random.randint(1000,9999)) + '.txt'
@@ -66,7 +66,7 @@ def prepare_data (data, batch_size):
 train_x, train_y, valid_x, valid_y = prepare_data(data, batch_size)
 
 
-rnn = RNN_LSTM(input_size, rnn_dim, num_layers, num_classes)
+rnn = RNN_LSTM_EMBED(input_size, embed_size, rnn_dim, num_layers, num_classes)
 
 rnn.cuda()
 

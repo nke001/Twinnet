@@ -154,6 +154,7 @@ for epoch in range(num_epochs):
         idx = torch.LongTensor(idx)
         idx = Variable(idx).cuda()
         invert_backstates = back_states.index_select(1, idx)
+        invert_backstates = invert_backstates.detach()
 
         l2_loss = ((invert_backstates -  states) ** 2).mean()
 
