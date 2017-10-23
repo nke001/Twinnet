@@ -9,10 +9,11 @@ from char_data_iterator import TextIterator
 import numpy
 import os
 import random
+from itertools import chain
 
 
 length = 784
-input_size = 2
+input_size = 1
 rnn_dim = 512
 num_layers = 2
 num_classes = 2
@@ -28,7 +29,7 @@ attn_every_k = 10
 
 
 
-file_name = 'cond_mnist_logs/cond_mnist_lstm_' + str(random.randint(1000,9999)) + '.txt'
+file_name = 'mnist_logs/mnist_lstm_lr_' +  str(lr) + str(random.randint(1000,9999)) + '.txt'
 
 
 '''train = TextIterator(dataset,
@@ -66,98 +67,117 @@ def prepare_data (data, batch_size):
 train_x, train_y, valid_x, valid_y = prepare_data(data, batch_size)
 
 
-rnn = RNN_LSTM(input_size, rnn_dim, num_layers, num_classes)
+rnn = RNN_LSTM_twin(input_size, rnn_dim, num_layers, num_classes)
+
+back_rnn = RNN_LSTM_twin(input_size, rnn_dim, num_layers, num_classes, reverse=True)
 
 rnn.cuda()
+back_rnn.cuda()
 
 criterion = nn.CrossEntropyLoss()
-opt = torch.optim.Adam(rnn.parameters(), lr=lr)
+l2_criterion = nn.MSELoss()
 
-def evaluate_valid(valid_x, valid_y):
+all_param = chain(rnn.parameters(), back_rnn.parameters())
+opt = torch.optim.Adam(all_param, lr=lr)
+
+def evaluate_valid(valid_x):
     valid_loss = []
     valid_acc = []
     i = 0
     valid_len = valid_x.shape[0]
     for i in range(valid_len):
         x = valid_x[i]
-        #x = numpy.asarray(x, dtype=numpy.float32)
-        x = numpy.expand_dims(numpy.asarray(x, dtype=numpy.float32), axis = -1)
-        y = numpy.concatenate(( x[:, 1:, :], numpy.zeros([x.shape[0], 1, 1])), 1)
-        y = torch.from_numpy(y)
-        
-        x_label = numpy.expand_dims(numpy.asarray(valid_y[i], dtype=numpy.float32), axis=-1)
-        x_label = numpy.expand_dims(numpy.repeat(x_label, length, axis=1), axis=-1) 
-        x = numpy.concatenate((x, x_label), axis = 2)
-        
-        #x = x.view(x.size()[0], x.size()[1], input_size)
+        x = numpy.asarray(x, dtype=numpy.float32)
         x = torch.from_numpy(x)
         x = x.view(x.size()[0], x.size()[1], input_size)
-        #y = torch.cat(( x[:, 1:, :], torch.zeros([x.size()[0], 1, input_size])), 1)
+        y = torch.cat(( x[:, 1:, :], torch.zeros([x.size()[0], 1, input_size])), 1)
         images = Variable(x).cuda()
         labels = Variable(y).long().cuda()
         opt.zero_grad()
-        outputs= rnn(images)
+        outputs, states= rnn(images)
         shp = outputs.size()
         outputs_reshp = outputs.view([shp[0] * shp[1], num_classes])
         labels_reshp = labels.view(shp[0] * shp[1])
         loss = criterion(outputs_reshp, labels_reshp)
-        
         acc =  (outputs.max(dim=2)[1] - labels).abs().sum()
         
         acc = float(acc.data[0]) / (batch_size * 784 )
         valid_acc.append(acc)
         valid_loss.append(784 * float(loss.data[0]))
         i += 1
-    log_line = 'conditional MNIST Epoch [%d/%d],  average Loss: %f, average accuracy %f, validation ' %(epoch, num_epochs,  numpy.asarray(valid_loss).mean(), 1.0 - numpy.asarray(valid_acc).mean())
+    log_line = 'MNIST generation Epoch [%d/%d],  average Loss: %f, average accuracy %f, validation ' %(epoch, num_epochs,  numpy.asarray(valid_loss).mean(), 1.0 - numpy.asarray(valid_acc).mean())
     print  (log_line)
     with open(file_name, 'a') as f:
         f.write(log_line)
 
 
 for epoch in range(num_epochs):
-    i = 0
+    step = 0
     train_len = train_x.shape[0]
-    for i in range(train_len):
+    for step in range(train_len):
         t = -time.time()
-        x = train_x[i]
-        x = numpy.expand_dims(numpy.asarray(x, dtype=numpy.float32), axis = -1)
-        y = numpy.concatenate(( x[:, 1:, :], numpy.zeros([x.shape[0], 1, 1])), 1)
-        y = torch.from_numpy(y)
-        x_label = numpy.expand_dims(numpy.asarray(train_y[i], dtype=numpy.float32), axis=-1)
-        x_label = numpy.expand_dims(numpy.repeat(x_label, length, axis=1), axis=-1)
-        x = numpy.concatenate((x, x_label), axis = 2)
-        #x = x.view(x.size()[0], x.size()[1], input_size)
+        x = train_x[step]
+        x = numpy.asarray(x, dtype=numpy.float32)
+        
+        back_x = numpy.flip(x,1).copy()
+        back_x = torch.from_numpy(back_x)
+        back_x = back_x.view(back_x.size()[0], back_x.size()[1], input_size)
+        back_y = torch.cat(( back_x[:, 1:, :], torch.zeros([back_x.size()[0], 1, input_size])), 1)
+        
+        back_images =  Variable(back_x).cuda()
+        back_labels = Variable(back_y).long().cuda()
+
+
         x = torch.from_numpy(x)
-        #y = torch.cat(( x[:, 1:, :], torch.zeros([x.size()[0], 1, input_size])), 1)
+        x = x.view(x.size()[0], x.size()[1], input_size)
+        y = torch.cat(( x[:, 1:, :], torch.zeros([x.size()[0], 1, input_size])), 1)
+        
+        
         images = Variable(x).cuda()
         labels = Variable(y).long().cuda()
+
+
         opt.zero_grad()
-        outputs = rnn(images)
+        outputs, states = rnn(images)
+        back_outputs, back_states = back_rnn(back_images)
         shp = outputs.size()
         outputs_reshp = outputs.view([shp[0] * shp[1], num_classes])
         labels_reshp = labels.view(shp[0] * shp[1])
-        loss = criterion(outputs_reshp, labels_reshp)
-        loss.backward()
+        back_outputs_reshp = back_outputs.view([shp[0] * shp[1], num_classes])
+        back_labels_reshp = back_labels.view(shp[0] * shp[1])
         
+
+        loss = criterion(outputs_reshp, labels_reshp)
+        back_loss = criterion(back_outputs_reshp, back_labels_reshp)
+    
+        idx = [i for i in range(back_states.size()[1] - 1, -1, -1)]
+        idx = torch.LongTensor(idx)
+        idx = Variable(idx).cuda()
+        invert_backstates = back_states.index_select(1, idx)
+
+        l2_loss = ((invert_backstates -  states) ** 2).mean()
+
+        all_loss = loss + back_loss + 2.0 * l2_loss
+        all_loss.backward()
         opt.step()
 
         t += time.time()
-
-        if (i+1) % 10 == 0:
-            log_line = 'Conditional MNIST Epoch [%d/%d], Step %d, Loss: %f, batch_time: %f \n' %(epoch, num_epochs, i+1, 784 * loss.data[0], t)
+        
+        if (step+1) % 10 == 0:
+            log_line = 'Epoch [%d/%d], Step %d, Loss: %f, batch_time: %f \n' %(epoch, num_epochs, step+1, 784 * all_loss.data[0], t)
             print (log_line)
             with open(file_name, 'a') as f:
                 f.write(log_line)
 
 
-        if (i + 1) % 100 == 0:
-            evaluate_valid(valid_x, valid_y)
+        if (step + 1) % 100 == 0:
+            evaluate_valid(valid_x)
 
-        i += 1
+        step += 1
 
     # evaluate per epoch
     print '--- Epoch finished ----'
-    evaluate_valid(valid_x, valid_y)
+    evaluate_valid(valid_x)
 
 
 
