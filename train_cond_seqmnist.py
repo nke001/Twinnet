@@ -28,7 +28,19 @@ attn_every_k = 10
 embed_size = 256
 num_labels = 10
 
-file_name = 'cond_mnist_logs/cond_mnist_lstm_' + str(random.randint(1000,9999)) + '.txt'
+folder_id = 'cond_mnist_logs'
+model_id = 'cond_mnist_lstm_' + str(random.randint(1000,9999)) 
+#os.mkdir(folder_id)
+file_name = os.path.join(folder_id, model_id + '.txt')
+model_file_name = os.path.join(folder_id, model_id + '.pkl')
+
+
+
+def save_param(model, model_file_name):
+    torch.save(model.state_dict(), model_file_name)
+
+def load_param(model, model_file_name):
+    model.load_state_dict(torch.load(model_file_name))
 
 
 '''train = TextIterator(dataset,
@@ -154,6 +166,14 @@ for epoch in range(num_epochs):
             evaluate_valid(valid_x, valid_y)
 
         i += 1
+    if avg_valid_loss < hist_valid_loss:
+        hist_valid_loss = avg_valid_loss
+        save_param(rnn, model_file_name)
+
+
+    with open(file_name, 'a') as f:
+        f.write(log_line)
+
 
     # evaluate per epoch
     print '--- Epoch finished ----'

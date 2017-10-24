@@ -28,8 +28,14 @@ truncate_length = 10
 attn_every_k = 10
 embed_size = 256
 
+folder_id = 'mnist_twin_logs'
+model_id = 'mnist_twin' + str(random.randint(1000,9999))
+#os.mkdir(folder_id)
+file_name = os.path.join(folder_id, model_id + '.txt')
+model_file_name = os.path.join(folder_id, model_id + '.pkl')
+hist_valid_loss = 1.0
 
-file_name = 'mnist_logs/mnist_lstm_lr_' +  str(lr) + str(random.randint(1000,9999)) + '.txt'
+#file_name = 'mnist_logs/mnist_lstm_lr_' +  str(lr) + str(random.randint(1000,9999)) + '.txt'
 
 
 '''train = TextIterator(dataset,
@@ -175,6 +181,10 @@ for epoch in range(num_epochs):
             evaluate_valid(valid_x)
 
         step += 1
+    
+    if avg_valid_loss < hist_valid_loss:
+        hist_valid_loss = avg_valid_loss
+        save_param(rnn, model_file_name)
 
     # evaluate per epoch
     print '--- Epoch finished ----'
