@@ -54,6 +54,9 @@ valid = TextIterator(valid_dataset,
 data = numpy.load('bin_mnist.npy')
 
 def prepare_data (data, batch_size):
+    # to get test data, use key 'test_set', 'test_labels'
+    # take data, preprocess it into (num_batches , batch_size, 784)
+
     train_x = data.item().get('train_set')
     train_y = data.item().get('train_labels')
     valid_x = data.item().get('valid_set')
@@ -70,9 +73,10 @@ def prepare_data (data, batch_size):
 
     return (train_x, train_y, valid_x, valid_y)
 
+
 train_x, train_y, valid_x, valid_y = prepare_data(data, batch_size)
 
-
+# embedding layer added to RNN
 rnn = RNN_LSTM_embed_twin(input_size, embed_size, rnn_dim, num_layers, num_classes)
 
 back_rnn = RNN_LSTM_embed_twin(input_size, embed_size, rnn_dim, num_layers, num_classes, reverse=True)
@@ -105,13 +109,22 @@ def evaluate_valid(valid_x):
         outputs_reshp = outputs.view([shp[0] * shp[1], num_classes])
         labels_reshp = labels.view(shp[0] * shp[1])
         loss = criterion(outputs_reshp, labels_reshp)
+        # acc just takes arg max, and check how many are correct
         acc =  (outputs.max(dim=2)[1] - labels).abs().sum()
-        
         acc = float(acc.data[0]) / (batch_size * 784 )
         valid_acc.append(acc)
         valid_loss.append(784 * float(loss.data[0]))
         i += 1
-    log_line = 'MNIST generation Epoch [%d/%d],  average Loss: %f, average accuracy %f, validation ' %(epoch, num_epochs,  numpy.asarray(valid_loss).mean(), 1.0 - numpy.asarray(valid_acc).mean())
+    
+
+    avg_valid_loss =  numpy.asarray(valid_loss).mean()
+    if avg_valid_loss < hist_valid_loss:
+        # save model
+        hist_valid_loss = avg_valid_loss
+        save_param(rnn, model_file_name)
+
+    
+    log_line = 'MNIST generation Epoch [%d/%d],  average Loss: %f, average accuracy %f, validation ' %(epoch, num_epochs,  avg_valid_loss, 1.0 - numpy.asarray(valid_acc).mean())
     print  (log_line)
     with open(file_name, 'a') as f:
         f.write(log_line)
@@ -125,23 +138,27 @@ for epoch in range(num_epochs):
         x = train_x[step]
         x = numpy.asarray(x, dtype=numpy.float32)
         
-        
+        # back_x is 5, 4, 3, 2, 1
         back_x = numpy.flip(x,1).copy()
         back_x = torch.from_numpy(back_x)
         back_x = back_x.view(back_x.size()[0], back_x.size()[1], input_size)
         #back_y = torch.cat(( back_x[:, 1:, :], torch.zeros([back_x.size()[0], 1, input_size])), 1)
+        # back_y is then 4, 3, 2, 1, 
         back_y = back_x[ :, 1:, :]
+        # back_x is 5, 4, 3, 2,
         back_x = back_x[:, : -1 , :]
 
 
         back_images =  Variable(back_x).cuda()
         back_labels = Variable(back_y).long().cuda()
 
-
+        # x is 1, 2, 3, 4
         x = torch.from_numpy(x)
         x = x.view(x.size()[0], x.size()[1], input_size)
         #y = torch.cat(( x[:, 1:, :], torch.zeros([x.size()[0], 1, input_size])), 1)
+        # y is 2, 3, 4, 5 
         y = x[:, 1:, :]
+        # x is 1, 2, 3, 4
         x = x[:, :-1, :]
 
         
@@ -161,16 +178,18 @@ for epoch in range(num_epochs):
 
         loss = criterion(outputs_reshp, labels_reshp)
         back_loss = criterion(back_outputs_reshp, back_labels_reshp)
-    
+        
+        #reversing backstates
         idx = [i for i in range(back_states.size()[1] - 1, -1, -1)]
         idx = torch.LongTensor(idx)
         idx = Variable(idx).cuda()
         invert_backstates = back_states.index_select(1, idx)
         invert_backstates = invert_backstates.detach()
 
+        # so matching should happen between s1 == back_s1, s2 == back_s4
         states = states[:, : -1, : ]
         invert_backstates = invert_backstates [:, 1: , :]
-
+        
         l2_loss = ((invert_backstates -  states) ** 2).mean()
 
         all_loss = loss + back_loss + 0.01  * l2_loss
@@ -191,10 +210,6 @@ for epoch in range(num_epochs):
 
         step += 1
     
-    if avg_valid_loss < hist_valid_loss:
-        hist_valid_loss = avg_valid_loss
-        save_param(rnn, model_file_name)
-
     # evaluate per epoch
     print '--- Epoch finished ----'
     evaluate_valid(valid_x)
