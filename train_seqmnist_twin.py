@@ -168,12 +168,12 @@ for epoch in range(num_epochs):
         invert_backstates = back_states.index_select(1, idx)
         invert_backstates = invert_backstates.detach()
 
-        states = states[:, 1:, : ]
-        invert_backstates = invert_backstates [:, :-1, :]
+        states = states[:, : -1, : ]
+        invert_backstates = invert_backstates [:, 1: , :]
 
         l2_loss = ((invert_backstates -  states) ** 2).mean()
 
-        all_loss = loss + back_loss + 2.0 * l2_loss
+        all_loss = loss + back_loss + 0.01  * l2_loss
         all_loss.backward()
         opt.step()
 
