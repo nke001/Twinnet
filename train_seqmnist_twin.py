@@ -48,6 +48,7 @@ class Model(nn.Module):
         self.bwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
         self.fwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
         self.bwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
+        self.fwd_aff = nn.Linear(rnn_dim, rnn_dim)
 
     def init_hidden(self, bsz):
         weight = next(self.parameters()).data
@@ -63,6 +64,10 @@ class Model(nn.Module):
         vis_ = vis.view(vis.size(0) * bsize, self.rnn_dim)
         out = out_mod(vis_)
         out = out.view(vis.size(0), bsize)
+        # transform forward with affine
+        if forward:
+            vis_ = self.fwd_aff(vis_)
+            vis = vis_.view(vis.size(0), bsize, self.rnn_dim)
         return out, vis, states
 
     def forward(self, fwd_x, bwd_x, hidden):
@@ -80,7 +85,7 @@ def evaluate(model, bsz, data_x, data_y):
         x = torch.from_numpy(x)
         inp = Variable(x[:-1], volatile=True).long().cuda()
         trg = Variable(x[1:], volatile=True).float().cuda()
-        out, sta, _ = model.rnn(inp, hidden)
+        out, vis, _ = model.rnn(inp, hidden)
         loss = binary_crossentropy(trg, out).mean()
         valid_loss.append(loss.data[0])
     return np.asarray(valid_loss).mean()
@@ -162,6 +167,7 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
             idx = torch.LongTensor(idx)
             idx = Variable(idx).cuda()
             bwd_vis_inv = bwd_vis.index_select(0, idx)
+            # interrupt gradient here
             bwd_vis_inv = bwd_vis_inv.detach()
 
             twin_loss = ((fwd_vis - bwd_vis_inv) ** 2).mean()

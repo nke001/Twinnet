@@ -46,6 +46,7 @@ class Model(nn.Module):
         self.embed = nn.Embedding(2, 200)
         self.fwd_rnn = nn.LSTM(200 + 10, rnn_dim, nlayers, batch_first=False, dropout=0)
         self.bwd_rnn = nn.LSTM(200 + 10, rnn_dim, nlayers, batch_first=False, dropout=0)
+        self.fwd_aff = nn.Linear(rnn_dim, rnn_dim)
         self.fwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
         self.bwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
 
@@ -66,6 +67,10 @@ class Model(nn.Module):
         vis_ = vis.view(vis.size(0) * bsize, self.rnn_dim)
         out = out_mod(vis_)
         out = out.view(vis.size(0), bsize)
+        # transform forward with affine
+        if forward:
+            vis_ = self.fwd_aff(vis_)
+            vis = vis_.view(vis.size(0), bsize, self.rnn_dim)
         return out, vis, states
 
     def forward(self, fwd_x, bwd_x, y, hidden):
@@ -132,7 +137,7 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
     for epoch in range(num_epochs):
         step = 0
         old_valid_loss = np.inf
-        b_fwd_loss, b_bwd_loss, b_twin_loss, b_all_loss = 0., 0., 0., 0.
+        b_fwd_loss, b_bwd_loss, b_twin_loss, b_all_loss = (0., 0., 0., 0.)
         model.train()
         print('Epoch {}: ({})'.format(epoch, model_id.upper()))
         for x, y in get_epoch_iterator(bsz, train_x, train_y):
