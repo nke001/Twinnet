@@ -81,7 +81,6 @@ def evaluate(model, bsz, data_x, data_y):
         x = torch.from_numpy(x)
         inp = Variable(x[:-1], volatile=True).long().cuda()
         trg = Variable(x[1:], volatile=True).float().cuda()
-        opt.zero_grad()
         out, sta = model.rnn(inp, hidden)
         loss = binary_crossentropy(trg, out).mean()
         valid_loss.append(loss.data[0])
