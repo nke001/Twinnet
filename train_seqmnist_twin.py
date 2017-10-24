@@ -15,8 +15,6 @@ import load
 
 # set a bunch of seeds
 seed = 1234
-torch.manual_seed(seed)
-torch.cuda.manual_seed(seed)
 rng = np.random.RandomState(seed)
 
 
@@ -97,6 +95,9 @@ def evaluate(model, bsz, data_x, data_y):
 @click.option('--twin', default=0.)
 def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
     # use hugo's binarized MNIST
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    
     log_interval = 100
     folder_id = 'mnist_twin_logs'
     model_id = 'mnist_twin{}'.format(twin)
