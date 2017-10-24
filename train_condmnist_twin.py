@@ -44,8 +44,8 @@ class Model(nn.Module):
         self.rnn_dim = rnn_dim
         self.nlayers = nlayers
         self.embed = nn.Embedding(2, 200)
-        self.fwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
-        self.bwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
+        self.fwd_rnn = nn.LSTM(200 + 10, rnn_dim, nlayers, batch_first=False, dropout=0)
+        self.bwd_rnn = nn.LSTM(200 + 10, rnn_dim, nlayers, batch_first=False, dropout=0)
         self.fwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
         self.bwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
 
@@ -59,6 +59,7 @@ class Model(nn.Module):
         out_mod = self.fwd_out if forward else self.bwd_out
         bsize = x.size(1)
         x = self.embed(x)
+        # expand y and concatenate to the input x
         y = y.unsqueeze(0).expand_as(x)
         x = torch.cat([x, y], 2)
         vis, states = rnn_mod(x, hidden)
