@@ -125,19 +125,25 @@ for epoch in range(num_epochs):
         x = train_x[step]
         x = numpy.asarray(x, dtype=numpy.float32)
         
+        
         back_x = numpy.flip(x,1).copy()
         back_x = torch.from_numpy(back_x)
         back_x = back_x.view(back_x.size()[0], back_x.size()[1], input_size)
-        back_y = torch.cat(( back_x[:, 1:, :], torch.zeros([back_x.size()[0], 1, input_size])), 1)
-        
+        #back_y = torch.cat(( back_x[:, 1:, :], torch.zeros([back_x.size()[0], 1, input_size])), 1)
+        back_y = back_x[ :, 1:, :]
+        back_x = back_x[:, : -1 , :]
+
+
         back_images =  Variable(back_x).cuda()
         back_labels = Variable(back_y).long().cuda()
 
 
         x = torch.from_numpy(x)
         x = x.view(x.size()[0], x.size()[1], input_size)
-        y = torch.cat(( x[:, 1:, :], torch.zeros([x.size()[0], 1, input_size])), 1)
-        
+        #y = torch.cat(( x[:, 1:, :], torch.zeros([x.size()[0], 1, input_size])), 1)
+        y = x[:, 1:, :]
+        x = x[:, :-1, :]
+
         
         images = Variable(x).cuda()
         labels = Variable(y).long().cuda()
@@ -161,6 +167,9 @@ for epoch in range(num_epochs):
         idx = Variable(idx).cuda()
         invert_backstates = back_states.index_select(1, idx)
         invert_backstates = invert_backstates.detach()
+
+        states = states[:, 1:, : ]
+        invert_backstates = invert_backstates [:, :-1, :]
 
         l2_loss = ((invert_backstates -  states) ** 2).mean()
 

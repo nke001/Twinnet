@@ -120,7 +120,12 @@ def evaluate_valid(valid_x, valid_y):
         valid_acc.append(acc)
         valid_loss.append(784 * float(loss.data[0]))
         i += 1
-    log_line = 'conditional MNIST Epoch [%d/%d],  average Loss: %f, average accuracy %f, validation ' %(epoch, num_epochs,  numpy.asarray(valid_loss).mean(), 1.0 - numpy.asarray(valid_acc).mean())
+    avg_valid_loss = numpy.asarray(valid_loss).mean()
+    if avg_valid_loss < hist_valid_loss:
+        hist_valid_loss = avg_valid_loss
+        save_param(rnn, model_file_name)
+
+    log_line = 'conditional MNIST Epoch [%d/%d],  average Loss: %f, average accuracy %f, validation ' %(epoch, num_epochs,  avg_valid_loss, 1.0 - numpy.asarray(valid_acc).mean())
     print  (log_line)
     with open(file_name, 'a') as f:
         f.write(log_line)
@@ -166,10 +171,6 @@ for epoch in range(num_epochs):
             evaluate_valid(valid_x, valid_y)
 
         i += 1
-    if avg_valid_loss < hist_valid_loss:
-        hist_valid_loss = avg_valid_loss
-        save_param(rnn, model_file_name)
-
 
     with open(file_name, 'a') as f:
         f.write(log_line)
