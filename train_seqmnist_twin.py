@@ -5,7 +5,7 @@ from torch.autograd import Variable
 import torchvision.datasets as dsets
 from layer_pytorch import *
 import time
-from char_data_iterator import TextIterator
+import click
 import numpy
 import numpy as np
 import os
@@ -13,54 +13,11 @@ import random
 from itertools import chain
 import load
 
-
-# one-layer LSTM
-nlayers = 1
-rnn_dim = 1024
-bsz = 50
-num_epochs = 100
-lr = 0.001
-n_words = 2
-log_interval = 100
-twin = 0.
-disconnect = True
-seed = 1234
-# use hugo's binarized MNIST
-use_hugo_version = True
-
-folder_id = 'mnist_twin_logs'
-model_id = 'mnist_twin{}'.format(twin)
-log_file_name = os.path.join(folder_id, model_id + '.txt')
-model_file_name = os.path.join(folder_id, model_id + '.pt')
-log_file = open(log_file_name, 'w')
-
 # set a bunch of seeds
+seed = 1234
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 rng = np.random.RandomState(seed)
-
-
-if use_hugo_version:
-    # Hugo's version, for compatibility with SOTA.
-    train_x, valid_x, test_x = \
-        load.load_binarized_mnist('./mnist/data')
-    train_y = None
-    valid_y = None
-    test_y = None
-else:
-    # "home-made" binarized MNIST version. Use with fixed binarization
-    # during training.
-    def binarize(rng, x):
-        return (x > rng.rand(x.shape[0], x.shape[1])).astype('int32')
-    
-    train_x, valid_x, test_x, train_y, valid_y, test_y = \
-        load.load_mnist('./mnist/data')
-    train_x = binarize(rng, train_x)
-    valid_x = binarize(rng, valid_x)
-    test_x = binarize(rng, test_x)
-
-# First example looks like...
-print(train_x[0])
 
 
 def get_epoch_iterator(nbatch, X, Y=None):
@@ -84,8 +41,10 @@ def binary_crossentropy(x, p):
 
 
 class Model(nn.Module):
-    def __init__(self):
+    def __init__(self, rnn_dim, nlayers):
         super(Model, self).__init__()
+        self.rnn_dim = rnn_dim
+        self.nlayers = nlayers
         self.embed = nn.Embedding(2, 200)
         self.fwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
         self.bwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
@@ -94,8 +53,8 @@ class Model(nn.Module):
 
     def init_hidden(self, bsz):
         weight = next(self.parameters()).data
-        return (Variable(weight.new(nlayers, bsz, rnn_dim).zero_()),
-                Variable(weight.new(nlayers, bsz, rnn_dim).zero_()))
+        return (Variable(weight.new(self.nlayers, bsz, self.rnn_dim).zero_()),
+                Variable(weight.new(self.nlayers, bsz, self.rnn_dim).zero_()))
 
     def rnn(self, x, hidden, forward=True):
         rnn_mod = self.fwd_rnn if forward else self.bwd_rnn
@@ -103,27 +62,22 @@ class Model(nn.Module):
         bsize = x.size(1)
         x = self.embed(x)
         vis, states = rnn_mod(x, hidden)
-        vis_ = vis.view(vis.size(0) * bsize, rnn_dim)
+        vis_ = vis.view(vis.size(0) * bsize, self.rnn_dim)
         out = out_mod(vis_)
         out = out.view(vis.size(0), bsize)
-        return out, vis
+        return out, vis, states
 
     def forward(self, fwd_x, bwd_x, hidden):
-        fwd_out, fwd_vis = self.rnn(fwd_x, hidden)
-        bwd_out, bwd_vis = self.rnn(bwd_x, hidden, forward=False)
+        fwd_out, fwd_vis, _ = self.rnn(fwd_x, hidden)
+        bwd_out, bwd_vis, _ = self.rnn(bwd_x, hidden, forward=False)
         return fwd_out, bwd_out, fwd_vis, bwd_vis
 
 
-model = Model()
-model.cuda()
-hidden = model.init_hidden(bsz)
-opt = torch.optim.Adam(model.parameters(), lr=lr)
-
-
-def evaluate(data_x, data_y):
+def evaluate(model, bsz, data_x, data_y):
     model.eval()
     valid_loss = []
     for x, _ in get_epoch_iterator(bsz, data_x, data_y):
+        x = np.concatenate([np.zeros((1, bsz)).astype('int32'), x], axis=0)
         x = torch.from_numpy(x)
         inp = Variable(x[:-1], volatile=True).long().cuda()
         trg = Variable(x[1:], volatile=True).float().cuda()
@@ -134,91 +88,134 @@ def evaluate(data_x, data_y):
     return np.asarray(valid_loss).mean()
 
 
-nbatches = train_x.shape[0] // bsz
-t = time.time()
-for epoch in range(num_epochs):
-    step = 0
-    train_len = train_x.shape[0]
-    old_valid_loss = np.inf
-    b_fwd_loss, b_bwd_loss, b_twin_loss, b_all_loss = 0., 0., 0., 0.
-    model.train()
-    print('Epoch {}: ({})'.format(epoch, model_id.upper()))
-    for x, _ in get_epoch_iterator(50, train_x, train_y):
-        opt.zero_grad()
-        # x = (x1, x2, x3, x4)
-        # fwd_inp = (x1, x2, x3)
-        # fwd_trg = (x2, x3, x4)
-        fwd_x = torch.from_numpy(x)
-        fwd_inp = Variable(fwd_x[:-1]).long().cuda()
-        fwd_trg = Variable(fwd_x[1:]).float().cuda()
-        # bwd_x = (x4, x3, x2, x1)
-        # bwd_inp = (x4, x3, x2)
-        # bwd_trg = (x3, x2, x1)
-        bwd_x = numpy.flip(x, 0).copy()
-        bwd_x = torch.from_numpy(bwd_x)
-        bwd_inp = Variable(bwd_x[:-1]).long().cuda()
-        bwd_trg = Variable(bwd_x[1:]).float().cuda()
+@click.command()
+@click.option('--nlayers', default=1)
+@click.option('--num_epochs', default=50)
+@click.option('--rnn_dim', default=1024)
+@click.option('--bsz', default=50)
+@click.option('--lr', default=0.001)
+@click.option('--twin', default=0.)
+def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
+    # use hugo's binarized MNIST
+    log_interval = 100
+    folder_id = 'mnist_twin_logs'
+    model_id = 'mnist_twin{}'.format(twin)
+    log_file_name = os.path.join(folder_id, model_id + '.txt')
+    model_file_name = os.path.join(folder_id, model_id + '.pt')
+    log_file = open(log_file_name, 'w')
 
-        # compute all the states for forward and backward
-        fwd_out, bwd_out, fwd_vis, bwd_vis = model(fwd_inp, bwd_inp, hidden)
-        fwd_loss = binary_crossentropy(fwd_trg, fwd_out).mean()
-        bwd_loss = binary_crossentropy(bwd_trg, bwd_out).mean()
-        bwd_loss = bwd_loss * (twin > 0.)
+    # Hugo's version, for compatibility with SOTA.
+    train_x, valid_x, test_x = \
+        load.load_binarized_mnist('./mnist/data')
+    train_y = None
+    valid_y = None
+    test_y = None
 
-        # reversing backstates
-        # fwd_vis = (out_x2, out_x3, out_x4)
-        # bwd_vis_inv = (out_x1, out_x2, out_x3)
-        # therefore match: fwd_vis[:-1] and bwd_vis_inv[1:]
-        idx = np.arange(bwd_vis.size(0))[::-1].tolist()
-        idx = torch.LongTensor(idx)
-        idx = Variable(idx).cuda()
-        bwd_vis_inv = bwd_vis.index_select(0, idx)
-        if disconnect:
+    # First example looks like...
+    print(train_x[0])
+
+    model = Model(rnn_dim, nlayers)
+    model.cuda()
+    hidden = model.init_hidden(bsz)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+
+    nbatches = train_x.shape[0] // bsz
+    t = time.time()
+    for epoch in range(num_epochs):
+        step = 0
+        old_valid_loss = np.inf
+        b_fwd_loss, b_bwd_loss, b_twin_loss, b_all_loss = 0., 0., 0., 0.
+        model.train()
+        print('Epoch {}: ({})'.format(epoch, model_id.upper()))
+        for x, _ in get_epoch_iterator(bsz, train_x, train_y):
+            opt.zero_grad()
+            # x = (0, x1, x2, x3, x4)
+            # fwd_inp = (0, x1, x2, x3)
+            # fwd_trg = (x1, x2, x3, x4)
+            x_ = np.concatenate([np.zeros((1, bsz)).astype('int32'), x], axis=0)
+            fwd_x = torch.from_numpy(x_)
+            fwd_inp = Variable(fwd_x[:-1]).long().cuda()
+            fwd_trg = Variable(fwd_x[1:]).float().cuda()
+            # bwd_x = (0, x4, x3, x2, x1)
+            # bwd_inp = (0, x4, x3, x2)
+            # bwd_trg = (x4, x3, x2, x1)
+            bwd_x = numpy.flip(x, 0).copy()
+            x_ = np.concatenate([np.zeros((1, bsz)).astype('int32'), bwd_x], axis=0)
+            bwd_x = torch.from_numpy(x_)
+            bwd_inp = Variable(bwd_x[:-1]).long().cuda()
+            bwd_trg = Variable(bwd_x[1:]).float().cuda()
+
+            # compute all the states for forward and backward
+            fwd_out, bwd_out, fwd_vis, bwd_vis = model(fwd_inp, bwd_inp, hidden)
+            assert fwd_out.size(0) == 784
+            assert bwd_out.size(0) == 784
+            fwd_loss = binary_crossentropy(fwd_trg, fwd_out).mean()
+            bwd_loss = binary_crossentropy(bwd_trg, bwd_out).mean()
+            bwd_loss = bwd_loss * (twin > 0.)
+
+            # reversing backstates
+            # fwd_vis = (out_x1, out_x2, out_x3, out_x4)
+            # bwd_vis_inv = (out_x1, out_x2, out_x3, out_x4)
+            # therefore match: fwd_vis and bwd_vis_inv
+            idx = np.arange(bwd_vis.size(0))[::-1].tolist()
+            idx = torch.LongTensor(idx)
+            idx = Variable(idx).cuda()
+            bwd_vis_inv = bwd_vis.index_select(0, idx)
             bwd_vis_inv = bwd_vis_inv.detach()
 
-        twin_loss = ((fwd_vis[:-1] - bwd_vis_inv[1:]) ** 2).mean()
-        twin_loss = twin_loss * twin
-        all_loss = fwd_loss + bwd_loss + twin_loss
-        all_loss.backward()
+            twin_loss = ((fwd_vis - bwd_vis_inv) ** 2).mean()
+            twin_loss = twin_loss * twin
+            all_loss = fwd_loss + bwd_loss + twin_loss
+            all_loss.backward()
 
-        torch.nn.utils.clip_grad_norm(model.parameters(), 1.)
-        opt.step()
+            torch.nn.utils.clip_grad_norm(model.parameters(), 1.)
+            opt.step()
 
-        b_all_loss += all_loss.data[0]
-        b_fwd_loss += fwd_loss.data[0]
-        b_bwd_loss += bwd_loss.data[0]
-        b_twin_loss += twin_loss.data[0]
+            b_all_loss += all_loss.data[0]
+            b_fwd_loss += fwd_loss.data[0]
+            b_bwd_loss += bwd_loss.data[0]
+            b_twin_loss += twin_loss.data[0]
 
-        if (step + 1) % log_interval == 0:
-            s = time.time()
-            log_line = 'Epoch [%d/%d], Step [%d/%d], loss: %f, fwd loss: %f, twin loss: %f, bwd loss: %f, %.2fit/s' % (
-                epoch, num_epochs, step + 1, nbatches,
-                b_all_loss / log_interval,
-                b_fwd_loss / log_interval,
-                b_twin_loss / log_interval,
-                b_bwd_loss / log_interval,
-                log_interval / (s - t))
-            b_all_loss = 0.
-            b_fwd_loss = 0.
-            b_bwd_loss = 0.
-            b_twin_loss = 0.
-            t = time.time()
-            print(log_line)
-            log_file.write(log_line + '\n')
+            if (step + 1) % log_interval == 0:
+                s = time.time()
+                log_line = 'Epoch [%d/%d], Step [%d/%d], loss: %f, fwd loss: %f, twin loss: %f, bwd loss: %f, %.2fit/s' % (
+                    epoch, num_epochs, step + 1, nbatches,
+                    b_all_loss / log_interval,
+                    b_fwd_loss / log_interval,
+                    b_twin_loss / log_interval,
+                    b_bwd_loss / log_interval,
+                    log_interval / (s - t))
+                b_all_loss = 0.
+                b_fwd_loss = 0.
+                b_bwd_loss = 0.
+                b_twin_loss = 0.
+                t = time.time()
+                print(log_line)
+                log_file.write(log_line + '\n')
 
-        step += 1
+            step += 1
 
-    # evaluate per epoch
-    print('--- Epoch finished ----')
-    val_loss = evaluate(valid_x, valid_y)
-    log_line = 'valid -- nll: %f' % (val_loss)
-    print(log_line)
-    log_file.write(log_line + '\n')
-    test_loss = evaluate(test_x, test_y)
-    log_line = 'test -- nll: %f' % (test_loss)
-    print(log_line)
-    log_file.write(log_line + '\n')
+        # evaluate per epoch
+        print('--- Epoch finished ----')
+        val_loss = evaluate(model, bsz, valid_x, valid_y)
+        log_line = 'valid -- nll: %f' % (val_loss)
+        print(log_line)
+        log_file.write(log_line + '\n')
+        test_loss = evaluate(model, bsz, test_x, test_y)
+        log_line = 'test -- nll: %f' % (test_loss)
+        print(log_line)
+        log_file.write(log_line + '\n')
 
-    if old_valid_loss > val_loss:
-        old_valid_loss = val_loss
-        torch.save(model, model_file_name)
+        if old_valid_loss > val_loss:
+            old_valid_loss = val_loss
+            torch.save(model.state_dict(), model_file_name)
+        else:
+            for param_group in opt.param_groups:
+                lr = param_group['lr']
+                if lr > 0.00005:
+                    lr *= 0.5
+                param_group['lr'] = lr
+
+
+if __name__ == '__main__':
+    train()
