@@ -7,207 +7,189 @@ from layer_pytorch import *
 import time
 from char_data_iterator import TextIterator
 import numpy
+import numpy as np
 import os
 import random
 from itertools import chain
+import load
 
 
 length = 784
-input_size = 1
 rnn_dim = 512
-num_layers = 2
-num_classes = 2
-batch_size = 50
-valid_batch_size = 32
+bsz = 50
 num_epochs = 40
-lr = 0.0005
-n_words=2
-maxlen=785
-dataset = 'bin_mnist.npy'
-truncate_length = 10
-attn_every_k = 10
-embed_size = 256
+lr = 0.001
+n_words = 2
+log_interval = 100
+twin = 0.5
+seed = 1234
 
 folder_id = 'mnist_twin_logs'
-model_id = 'mnist_twin' + str(random.randint(1000,9999))
-#os.mkdir(folder_id)
+model_id = 'mnist_twin{}'.format(twin)
 file_name = os.path.join(folder_id, model_id + '.txt')
-model_file_name = os.path.join(folder_id, model_id + '.pkl')
-hist_valid_loss = 1.0
+model_file_name = os.path.join(folder_id, model_id + '.pt')
 
-data = numpy.load('bin_mnist.npy')
-
-def prepare_data (data, batch_size):
-    train_x = data.item().get('train_set')
-    train_y = data.item().get('train_labels')
-    valid_x = data.item().get('valid_set')
-    valid_y = data.item().get('valid_labels')
-
-    shp = train_x.shape
-    train_x = train_x.reshape(shp[0]/ batch_size, batch_size, shp[1])
-    shp = train_y.shape
-    train_y = train_y.reshape(shp[0]/ batch_size, batch_size)
-    shp = valid_x.shape
-    valid_x = valid_x.reshape(shp[0]/ batch_size, batch_size, shp[1])
-    shp = valid_y.shape
-    valid_y = valid_y.reshape(shp[0]/ batch_size, batch_size)
-
-    return (train_x, train_y, valid_x, valid_y)
+log_file = open(file_name, 'w')
+rng = np.random.RandomState(seed)
 
 
-train_x, train_y, valid_x, valid_y = prepare_data(data, batch_size)
+def binarize(rng, x):
+    return (x > rng.rand(x.shape[0], x.shape[1])).astype('int32')
 
-# embedding layer added to RNN
-rnn = RNN_LSTM_embed_twin(input_size, embed_size, rnn_dim, num_layers, num_classes)
-back_rnn = RNN_LSTM_embed_twin(input_size, embed_size, rnn_dim, num_layers, num_classes, reverse=True)
 
-rnn.cuda()
-back_rnn.cuda()
+train_x, valid_x, test_x, train_y, valid_y, test_y = \
+    load.load_mnist('./mnist/data')
+train_x = binarize(rng, train_x)
+valid_x = binarize(rng, valid_x)
+test_x = binarize(rng, test_x)
+print(train_x[0])
 
-criterion = nn.CrossEntropyLoss()
-l2_criterion = nn.MSELoss()
 
-all_param = chain(rnn.parameters(), back_rnn.parameters())
-opt = torch.optim.Adam(all_param, lr=lr)
+def get_epoch_iterator(nbatch, X, Y):
+    ndata = X.shape[0]
+    samples = rng.permutation(np.arange(ndata))
+    for b in range(0, ndata, nbatch):
+        idx = samples[b:b + nbatch]
+        assert len(idx) == nbatch
+        x = X[idx]
+        y = Y[idx]
+        x = x.reshape((-1, 784)).transpose(1, 0)
+        yield (x, y)
 
-def evaluate_valid(valid_x):
+
+def binary_crossentropy(x, p):
+    return -torch.sum((torch.log(p + 1e-6) * x + \
+                       torch.log(1 - p + 1e-6) * (1. - x)), 0)
+
+
+class Model(nn.Module):
+    def __init__(self):
+        super(Model, self).__init__()
+        self.embed = nn.Embedding(2, 200)
+        self.fwd_rnn = nn.LSTM(200, rnn_dim, 1, batch_first=False, dropout=0)
+        self.bwd_rnn = nn.LSTM(200, rnn_dim, 1, batch_first=False, dropout=0)
+        self.fwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
+        self.bwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
+
+    def init_hidden(self, bsz):
+        weight = next(self.parameters()).data
+        return (Variable(weight.new(1, bsz, rnn_dim).zero_()),
+                Variable(weight.new(1, bsz, rnn_dim).zero_()))
+    
+    def rnn(self, x, hidden, forward=True):
+        rnn_mod = self.fwd_rnn if forward else self.bwd_rnn
+        out_mod = self.fwd_out if forward else self.bwd_out
+        bsize = x.size(1)
+        x = self.embed(x)
+        vis, states = rnn_mod(x, hidden)
+        vis_ = vis.view(vis.size(0) * bsize, rnn_dim)
+        out = out_mod(vis_)
+        out = out.view(vis.size(0), bsize)
+        return out, vis
+
+    def forward(self, fwd_x, bwd_x, hidden):
+        fwd_out, fwd_vis = self.rnn(fwd_x, hidden)
+        bwd_out, bwd_vis = self.rnn(bwd_x, hidden, forward=False)
+        return fwd_out, bwd_out, fwd_vis, bwd_vis
+
+
+model = Model()
+model.cuda()
+hidden = model.init_hidden(bsz)
+opt = torch.optim.Adam(model.parameters(), lr=lr)
+
+
+def evaluate(data_x, data_y):
     valid_loss = []
-    valid_acc = []
-    i = 0
-    valid_len = valid_x.shape[0]
-    for i in range(valid_len):
-        x = valid_x[i]
-        x = numpy.asarray(x, dtype=numpy.float32)
+    for x, _ in get_epoch_iterator(bsz, data_x, data_y):
         x = torch.from_numpy(x)
-        x = x.view(x.size()[0], x.size()[1], input_size)
-        y = torch.cat(( x[:, 1:, :], torch.zeros([x.size()[0], 1, input_size])), 1)
-        images = Variable(x).cuda()
-        labels = Variable(y).long().cuda()
+        inp = Variable(x[:-1], volatile=True).long().cuda()
+        trg = Variable(x[1:], volatile=True).float().cuda()
         opt.zero_grad()
-        outputs, states= rnn(images)
-        shp = outputs.size()
-        outputs_reshp = outputs.view([shp[0] * shp[1], num_classes])
-        labels_reshp = labels.view(shp[0] * shp[1])
-        loss = criterion(outputs_reshp, labels_reshp)
-        # acc just takes arg max, and check how many are correct
-        acc =  (outputs.max(dim=2)[1] - labels).abs().sum()
-        acc = float(acc.data[0]) / (batch_size * 784 )
-        valid_acc.append(acc)
-        valid_loss.append(784 * float(loss.data[0]))
-        i += 1
-
-    avg_valid_loss =  numpy.asarray(valid_loss).mean()
-    if avg_valid_loss < hist_valid_loss:
-        # save model
-        hist_valid_loss = avg_valid_loss
-        save_param(rnn, model_file_name)
-
-    log_line = 'MNIST generation Epoch [%d/%d],  average Loss: %f, average accuracy %f, validation ' %(epoch, num_epochs,  avg_valid_loss, 1.0 - numpy.asarray(valid_acc).mean())
-    print  (log_line)
-    with open(file_name, 'a') as f:
-        f.write(log_line)
+        out, sta = model.rnn(inp, hidden)
+        loss = binary_crossentropy(trg, out).mean()
+        valid_loss.append(loss.data[0])
+    return np.asarray(valid_loss).mean()
 
 
+nbatches = train_x.shape[0] // bsz
+t = time.time()
 for epoch in range(num_epochs):
     step = 0
     train_len = train_x.shape[0]
-    for step in range(train_len):
-        t = -time.time()
-        x = train_x[step]
-        x = numpy.asarray(x, dtype=numpy.float32)
 
-        # back_x is 5, 4, 3, 2, 1
-        back_x = numpy.flip(x,1).copy()
-        back_x = torch.from_numpy(back_x)
-        back_x = back_x.view(back_x.size()[0], back_x.size()[1], input_size)
-        #back_y = torch.cat(( back_x[:, 1:, :], torch.zeros([back_x.size()[0], 1, input_size])), 1)
-        # back_y is then 4, 3, 2, 1
-        back_y = back_x[ :, 1:, :]
-        # back_x is 5, 4, 3, 2
-        back_x = back_x[:, : -1 , :]
-        back_images =  Variable(back_x).cuda()
-        back_labels = Variable(back_y).long().cuda()
-        # x is 1, 2, 3, 4, 5
-        x = torch.from_numpy(x)
-        x = x.view(x.size()[0], x.size()[1], input_size)
-        #y = torch.cat(( x[:, 1:, :], torch.zeros([x.size()[0], 1, input_size])), 1)
-        # y is 2, 3, 4, 5
-        y = x[:, 1:, :]
-        # x is 1, 2, 3, 4
-        x = x[:, :-1, :]
-        images = Variable(x).cuda()
-        labels = Variable(y).long().cuda()
+    b_fwd_loss, b_bwd_loss, b_twin_loss, b_all_loss = 0., 0., 0., 0. 
+    print('Epoch {}: ({})'.format(epoch, model_id.upper()))
+    for x, _ in get_epoch_iterator(50, train_x, train_y):
         opt.zero_grad()
-        outputs, states = rnn(images)
-        back_outputs, back_states = back_rnn(back_images)
-        shp = outputs.size()
-        outputs_reshp = outputs.view([shp[0] * shp[1], num_classes])
-        labels_reshp = labels.view(shp[0] * shp[1])
-        back_outputs_reshp = back_outputs.view([shp[0] * shp[1], num_classes])
-        back_labels_reshp = back_labels.view(shp[0] * shp[1])
-
-        loss = criterion(outputs_reshp, labels_reshp)
-        back_loss = criterion(back_outputs_reshp, back_labels_reshp)
+        # x = (x1, x2, x3, x4)
+        # fwd_inp = (x1, x2, x3)
+        # fwd_trg = (x2, x3, x4)
+        fwd_x = torch.from_numpy(x)
+        fwd_inp = Variable(fwd_x[:-1]).long().cuda()
+        fwd_trg = Variable(fwd_x[1:]).float().cuda()
+        # bwd_x = (x4, x3, x2, x1)
+        # bwd_inp = (x4, x3, x2)
+        # bwd_trg = (x3, x2, x1)
+        bwd_x = numpy.flip(x, 0).copy()
+        bwd_x = torch.from_numpy(bwd_x)
+        bwd_inp = Variable(bwd_x[:-1]).long().cuda()
+        bwd_trg = Variable(bwd_x[1:]).float().cuda()
+        
+        # compute all the states for forward and backward
+        fwd_out, bwd_out, fwd_vis, bwd_vis = model(fwd_inp, bwd_inp, hidden)
+        fwd_loss = binary_crossentropy(fwd_trg, fwd_out).mean()
+        bwd_loss = binary_crossentropy(bwd_trg, bwd_out).mean()
+        bwd_loss = bwd_loss * (twin > 0.)
 
         # reversing backstates
-        idx = [i for i in range(back_states.size()[1] - 1, -1, -1)]
+        # fwd_vis = (out_x2, out_x3, out_x4)
+        # bwd_vis_inv = (out_x1, out_x2, out_x3)
+        # therefore match: fwd_vis[:-1] and bwd_vis_inv[1:]
+        idx = np.arange(bwd_vis.size(0))[::-1].tolist()
         idx = torch.LongTensor(idx)
         idx = Variable(idx).cuda()
-        invert_backstates = back_states.index_select(1, idx)
-        invert_backstates = invert_backstates.detach()
-        # invert_backstates is 2, 3, 4, 5
-        # states is 1, 2, 3, 4
-        # so matching should happen between back 3 4 5 and forward 1 2 3
-        states = states[:, :-1, : ]
-        invert_backstates = invert_backstates [:, 1:, :]
-        l2_loss = ((invert_backstates -  states) ** 2).mean()
-        all_loss = loss + back_loss + 2.0 * l2_loss
+        bwd_vis_inv = bwd_vis.index_select(0, idx)
+        bwd_vis_inv = bwd_vis_inv.detach()
+        
+        twin_loss = ((fwd_vis[:-1] - bwd_vis_inv[1:]) ** 2).mean()
+        twin_loss = twin_loss * twin
+        all_loss = fwd_loss + bwd_loss + twin_loss
         all_loss.backward()
         opt.step()
 
-        t += time.time()
-        if (step+1) % 10 == 0:
-            log_line = 'Epoch [%d/%d], Step %d, all Loss: %f,  Loss: %f,  l2 Loss: %f, back Loss: %f, batch_time: %f \n' %(epoch, num_epochs, step+1, 784 * all_loss.data[0], 784 * loss.data[0], l2_loss.data[0], 784 * back_loss.data[0], t)
-            print (log_line)
-            with open(file_name, 'a') as f:
-                f.write(log_line)
+        b_all_loss += all_loss.data[0]
+        b_fwd_loss += fwd_loss.data[0]
+        b_bwd_loss += bwd_loss.data[0]
+        b_twin_loss += twin_loss.data[0]
 
-
-        if (step + 1) % 100 == 0:
-            evaluate_valid(valid_x)
+        if (step + 1) % log_interval == 0:
+            s = time.time()
+            log_line = 'Epoch [%d/%d], Step [%d/%d], loss: %f, fwd loss: %f, twin loss: %f, bwd loss: %f, %.2fit/s' % (
+                epoch, num_epochs, step + 1, nbatches,
+                b_all_loss / log_interval,
+                b_fwd_loss / log_interval,
+                b_twin_loss / log_interval,
+                b_bwd_loss / log_interval,
+                log_interval / (s - t))
+            b_all_loss = 0.
+            b_fwd_loss = 0.
+            b_bwd_loss = 0.
+            b_twin_loss = 0.
+            t = time.time()
+            print(log_line)
+            log_file.write(log_line + '\n')
 
         step += 1
 
     # evaluate per epoch
-    print '--- Epoch finished ----'
-    evaluate_valid(valid_x)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    print('--- Epoch finished ----')
+    val_loss = evaluate(valid_x, valid_y)
+    log_line = 'valid -- nll: %f' % (val_loss)
+    print(log_line)
+    log_file.write(log_line + '\n')
+    test_loss = evaluate(test_x, test_y)
+    log_line = 'test -- nll: %f' % (test_loss)
+    print(log_line)
+    log_file.write(log_line + '\n')
 
