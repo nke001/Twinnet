@@ -75,13 +75,14 @@ class Model(nn.Module):
 
 def evaluate(model, bsz, data_x, data_y):
     model.eval()
+    hidden = model.init_hidden(bsz)
     valid_loss = []
     for x, _ in get_epoch_iterator(bsz, data_x, data_y):
         x = np.concatenate([np.zeros((1, bsz)).astype('int32'), x], axis=0)
         x = torch.from_numpy(x)
         inp = Variable(x[:-1], volatile=True).long().cuda()
         trg = Variable(x[1:], volatile=True).float().cuda()
-        out, sta = model.rnn(inp, hidden)
+        out, sta, _ = model.rnn(inp, hidden)
         loss = binary_crossentropy(trg, out).mean()
         valid_loss.append(loss.data[0])
     return np.asarray(valid_loss).mean()
