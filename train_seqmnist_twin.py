@@ -35,33 +35,14 @@ file_name = os.path.join(folder_id, model_id + '.txt')
 model_file_name = os.path.join(folder_id, model_id + '.pkl')
 hist_valid_loss = 1.0
 
-#file_name = 'mnist_logs/mnist_lstm_lr_' +  str(lr) + str(random.randint(1000,9999)) + '.txt'
-
-
-'''train = TextIterator(dataset,
-                         dictionary,
-                         n_words_source=n_words,
-                         batch_size=batch_size,
-                         maxlen=maxlen,
-                         minlen=length)
-valid = TextIterator(valid_dataset,
-                         dictionary,
-                         n_words_source=n_words,
-                         batch_size=valid_batch_size,
-                         maxlen=maxlen,
-                         minlen=length)
-'''
 data = numpy.load('bin_mnist.npy')
 
 def prepare_data (data, batch_size):
-    # to get test data, use key 'test_set', 'test_labels'
-    # take data, preprocess it into (num_batches , batch_size, 784)
-
     train_x = data.item().get('train_set')
     train_y = data.item().get('train_labels')
     valid_x = data.item().get('valid_set')
     valid_y = data.item().get('valid_labels')
-    
+
     shp = train_x.shape
     train_x = train_x.reshape(shp[0]/ batch_size, batch_size, shp[1])
     shp = train_y.shape
@@ -78,7 +59,6 @@ train_x, train_y, valid_x, valid_y = prepare_data(data, batch_size)
 
 # embedding layer added to RNN
 rnn = RNN_LSTM_embed_twin(input_size, embed_size, rnn_dim, num_layers, num_classes)
-
 back_rnn = RNN_LSTM_embed_twin(input_size, embed_size, rnn_dim, num_layers, num_classes, reverse=True)
 
 rnn.cuda()
@@ -115,7 +95,6 @@ def evaluate_valid(valid_x):
         valid_acc.append(acc)
         valid_loss.append(784 * float(loss.data[0]))
         i += 1
-    
 
     avg_valid_loss =  numpy.asarray(valid_loss).mean()
     if avg_valid_loss < hist_valid_loss:
@@ -123,7 +102,6 @@ def evaluate_valid(valid_x):
         hist_valid_loss = avg_valid_loss
         save_param(rnn, model_file_name)
 
-    
     log_line = 'MNIST generation Epoch [%d/%d],  average Loss: %f, average accuracy %f, validation ' %(epoch, num_epochs,  avg_valid_loss, 1.0 - numpy.asarray(valid_acc).mean())
     print  (log_line)
     with open(file_name, 'a') as f:
@@ -137,35 +115,28 @@ for epoch in range(num_epochs):
         t = -time.time()
         x = train_x[step]
         x = numpy.asarray(x, dtype=numpy.float32)
-        
+
         # back_x is 5, 4, 3, 2, 1
         back_x = numpy.flip(x,1).copy()
         back_x = torch.from_numpy(back_x)
         back_x = back_x.view(back_x.size()[0], back_x.size()[1], input_size)
         #back_y = torch.cat(( back_x[:, 1:, :], torch.zeros([back_x.size()[0], 1, input_size])), 1)
-        # back_y is then 4, 3, 2, 1, 
+        # back_y is then 4, 3, 2, 1
         back_y = back_x[ :, 1:, :]
-        # back_x is 5, 4, 3, 2,
+        # back_x is 5, 4, 3, 2
         back_x = back_x[:, : -1 , :]
-
-
         back_images =  Variable(back_x).cuda()
         back_labels = Variable(back_y).long().cuda()
-
-        # x is 1, 2, 3, 4
+        # x is 1, 2, 3, 4, 5
         x = torch.from_numpy(x)
         x = x.view(x.size()[0], x.size()[1], input_size)
         #y = torch.cat(( x[:, 1:, :], torch.zeros([x.size()[0], 1, input_size])), 1)
-        # y is 2, 3, 4, 5 
+        # y is 2, 3, 4, 5
         y = x[:, 1:, :]
         # x is 1, 2, 3, 4
         x = x[:, :-1, :]
-
-        
         images = Variable(x).cuda()
         labels = Variable(y).long().cuda()
-
-
         opt.zero_grad()
         outputs, states = rnn(images)
         back_outputs, back_states = back_rnn(back_images)
@@ -174,30 +145,27 @@ for epoch in range(num_epochs):
         labels_reshp = labels.view(shp[0] * shp[1])
         back_outputs_reshp = back_outputs.view([shp[0] * shp[1], num_classes])
         back_labels_reshp = back_labels.view(shp[0] * shp[1])
-        
 
         loss = criterion(outputs_reshp, labels_reshp)
         back_loss = criterion(back_outputs_reshp, back_labels_reshp)
-        
-        #reversing backstates
+
+        # reversing backstates
         idx = [i for i in range(back_states.size()[1] - 1, -1, -1)]
         idx = torch.LongTensor(idx)
         idx = Variable(idx).cuda()
         invert_backstates = back_states.index_select(1, idx)
         invert_backstates = invert_backstates.detach()
-
-        # so matching should happen between s1 == back_s1, s2 == back_s4
-        states = states[:, : -1, : ]
-        invert_backstates = invert_backstates [:, 1: , :]
-        
+        # invert_backstates is 2, 3, 4, 5
+        # states is 1, 2, 3, 4
+        # so matching should happen between back 3 4 5 and forward 1 2 3
+        states = states[:, :-1, : ]
+        invert_backstates = invert_backstates [:, 1:, :]
         l2_loss = ((invert_backstates -  states) ** 2).mean()
-
-        all_loss = loss + back_loss + 0.01  * l2_loss
+        all_loss = loss + back_loss + 2.0 * l2_loss
         all_loss.backward()
         opt.step()
 
         t += time.time()
-        
         if (step+1) % 10 == 0:
             log_line = 'Epoch [%d/%d], Step %d, all Loss: %f,  Loss: %f,  l2 Loss: %f, back Loss: %f, batch_time: %f \n' %(epoch, num_epochs, step+1, 784 * all_loss.data[0], 784 * loss.data[0], l2_loss.data[0], 784 * back_loss.data[0], t)
             print (log_line)
@@ -209,7 +177,7 @@ for epoch in range(num_epochs):
             evaluate_valid(valid_x)
 
         step += 1
-    
+
     # evaluate per epoch
     print '--- Epoch finished ----'
     evaluate_valid(valid_x)
