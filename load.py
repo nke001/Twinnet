@@ -28,3 +28,10 @@ def load_mnist(data_dir):
     return trX, vaX, teX, trY, vaY, teY
 
 
+def load_binarized_mnist(data_path):
+    # binarized_mnist_test.amat  binarized_mnist_train.amat  binarized_mnist_valid.amat
+    print('loading binary MNIST, sampled version (de Larochelle)')
+    train_x = np.loadtxt(data_path + '/binarized_mnist_train.amat').astype('int32')
+    valid_x = np.loadtxt(data_path + '/binarized_mnist_valid.amat').astype('int32')
+    test_x = np.loadtxt(data_path + '/binarized_mnist_test.amat').astype('int32')
+    return train_x, valid_x, test_x

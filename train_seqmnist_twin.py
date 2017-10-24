@@ -14,51 +14,72 @@ from itertools import chain
 import load
 
 
-length = 784
-rnn_dim = 512
+# one-layer LSTM
+nlayers = 1
+rnn_dim = 1024
 bsz = 50
-num_epochs = 40
+num_epochs = 100
 lr = 0.001
 n_words = 2
 log_interval = 100
-twin = 0.5
+twin = 0.
+disconnect = True
 seed = 1234
+# use hugo's binarized MNIST
+use_hugo_version = True
 
 folder_id = 'mnist_twin_logs'
 model_id = 'mnist_twin{}'.format(twin)
-file_name = os.path.join(folder_id, model_id + '.txt')
+log_file_name = os.path.join(folder_id, model_id + '.txt')
 model_file_name = os.path.join(folder_id, model_id + '.pt')
+log_file = open(log_file_name, 'w')
 
-log_file = open(file_name, 'w')
+# set a bunch of seeds
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
 rng = np.random.RandomState(seed)
 
 
-def binarize(rng, x):
-    return (x > rng.rand(x.shape[0], x.shape[1])).astype('int32')
+if use_hugo_version:
+    # Hugo's version, for compatibility with SOTA.
+    train_x, valid_x, test_x = \
+        load.load_binarized_mnist('./mnist/data')
+    train_y = None
+    valid_y = None
+    test_y = None
+else:
+    # "home-made" binarized MNIST version. Use with fixed binarization
+    # during training.
+    def binarize(rng, x):
+        return (x > rng.rand(x.shape[0], x.shape[1])).astype('int32')
+    
+    train_x, valid_x, test_x, train_y, valid_y, test_y = \
+        load.load_mnist('./mnist/data')
+    train_x = binarize(rng, train_x)
+    valid_x = binarize(rng, valid_x)
+    test_x = binarize(rng, test_x)
 
-
-train_x, valid_x, test_x, train_y, valid_y, test_y = \
-    load.load_mnist('./mnist/data')
-train_x = binarize(rng, train_x)
-valid_x = binarize(rng, valid_x)
-test_x = binarize(rng, test_x)
+# First example looks like...
 print(train_x[0])
 
 
-def get_epoch_iterator(nbatch, X, Y):
+def get_epoch_iterator(nbatch, X, Y=None):
     ndata = X.shape[0]
     samples = rng.permutation(np.arange(ndata))
     for b in range(0, ndata, nbatch):
         idx = samples[b:b + nbatch]
         assert len(idx) == nbatch
         x = X[idx]
-        y = Y[idx]
+        if Y is not None:
+            y = Y[idx]
+        else:
+            y = None
         x = x.reshape((-1, 784)).transpose(1, 0)
         yield (x, y)
 
 
 def binary_crossentropy(x, p):
-    return -torch.sum((torch.log(p + 1e-6) * x + \
+    return -torch.sum((torch.log(p + 1e-6) * x +
                        torch.log(1 - p + 1e-6) * (1. - x)), 0)
 
 
@@ -66,16 +87,16 @@ class Model(nn.Module):
     def __init__(self):
         super(Model, self).__init__()
         self.embed = nn.Embedding(2, 200)
-        self.fwd_rnn = nn.LSTM(200, rnn_dim, 1, batch_first=False, dropout=0)
-        self.bwd_rnn = nn.LSTM(200, rnn_dim, 1, batch_first=False, dropout=0)
+        self.fwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
+        self.bwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
         self.fwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
         self.bwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
 
     def init_hidden(self, bsz):
         weight = next(self.parameters()).data
-        return (Variable(weight.new(1, bsz, rnn_dim).zero_()),
-                Variable(weight.new(1, bsz, rnn_dim).zero_()))
-    
+        return (Variable(weight.new(nlayers, bsz, rnn_dim).zero_()),
+                Variable(weight.new(nlayers, bsz, rnn_dim).zero_()))
+
     def rnn(self, x, hidden, forward=True):
         rnn_mod = self.fwd_rnn if forward else self.bwd_rnn
         out_mod = self.fwd_out if forward else self.bwd_out
@@ -100,6 +121,7 @@ opt = torch.optim.Adam(model.parameters(), lr=lr)
 
 
 def evaluate(data_x, data_y):
+    model.eval()
     valid_loss = []
     for x, _ in get_epoch_iterator(bsz, data_x, data_y):
         x = torch.from_numpy(x)
@@ -117,8 +139,9 @@ t = time.time()
 for epoch in range(num_epochs):
     step = 0
     train_len = train_x.shape[0]
-
-    b_fwd_loss, b_bwd_loss, b_twin_loss, b_all_loss = 0., 0., 0., 0. 
+    old_valid_loss = np.inf
+    b_fwd_loss, b_bwd_loss, b_twin_loss, b_all_loss = 0., 0., 0., 0.
+    model.train()
     print('Epoch {}: ({})'.format(epoch, model_id.upper()))
     for x, _ in get_epoch_iterator(50, train_x, train_y):
         opt.zero_grad()
@@ -135,7 +158,7 @@ for epoch in range(num_epochs):
         bwd_x = torch.from_numpy(bwd_x)
         bwd_inp = Variable(bwd_x[:-1]).long().cuda()
         bwd_trg = Variable(bwd_x[1:]).float().cuda()
-        
+
         # compute all the states for forward and backward
         fwd_out, bwd_out, fwd_vis, bwd_vis = model(fwd_inp, bwd_inp, hidden)
         fwd_loss = binary_crossentropy(fwd_trg, fwd_out).mean()
@@ -150,12 +173,15 @@ for epoch in range(num_epochs):
         idx = torch.LongTensor(idx)
         idx = Variable(idx).cuda()
         bwd_vis_inv = bwd_vis.index_select(0, idx)
-        bwd_vis_inv = bwd_vis_inv.detach()
-        
+        if disconnect:
+            bwd_vis_inv = bwd_vis_inv.detach()
+
         twin_loss = ((fwd_vis[:-1] - bwd_vis_inv[1:]) ** 2).mean()
         twin_loss = twin_loss * twin
         all_loss = fwd_loss + bwd_loss + twin_loss
         all_loss.backward()
+
+        torch.nn.utils.clip_grad_norm(model.parameters(), 1.)
         opt.step()
 
         b_all_loss += all_loss.data[0]
@@ -193,3 +219,6 @@ for epoch in range(num_epochs):
     print(log_line)
     log_file.write(log_line + '\n')
 
+    if old_valid_loss > val_loss:
+        old_valid_loss = val_loss
+        torch.save(model, model_file_name)
