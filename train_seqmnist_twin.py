@@ -12,6 +12,7 @@ import os
 import random
 from itertools import chain
 import load
+import torch.nn.functional as F
 
 # set a bunch of seeds
 seed = 1234
@@ -46,8 +47,12 @@ class Model(nn.Module):
         self.embed = nn.Embedding(2, 200)
         self.fwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
         self.bwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
-        self.fwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
-        self.bwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
+        self.fwd_prj_prev = nn.Linear(200, 512)
+        self.bwd_prj_prev = nn.Linear(200, 512)
+        self.fwd_prj_out = nn.Linear(rnn_dim, 512)
+        self.bwd_prj_out = nn.Linear(rnn_dim, 512)
+        self.fwd_out = nn.Sequential(nn.Linear(512, 1), nn.Sigmoid())
+        self.bwd_out = nn.Sequential(nn.Linear(512, 1), nn.Sigmoid())
         self.fwd_aff = nn.Linear(rnn_dim, rnn_dim)
 
     def init_hidden(self, bsz):
@@ -58,11 +63,15 @@ class Model(nn.Module):
     def rnn(self, x, hidden, forward=True):
         rnn_mod = self.fwd_rnn if forward else self.bwd_rnn
         out_mod = self.fwd_out if forward else self.bwd_out
+        prv_mod = self.fwd_prj_prev if forward else self.bwd_prj_prev
+        prj_mod = self.fwd_prj_out if forward else self.bwd_prj_out
         bsize = x.size(1)
         x = self.embed(x)
         vis, states = rnn_mod(x, hidden)
         vis_ = vis.view(vis.size(0) * bsize, self.rnn_dim)
-        out = out_mod(vis_)
+        x_ = x.view(vis.size(0) * bsize, x.size(2))
+        out_ = F.leaky_relu(prv_mod(x_) + prj_mod(vis_), 0.3, False)
+        out = out_mod(out_)
         out = out.view(vis.size(0), bsize)
         # transform forward with affine
         if forward:
@@ -95,14 +104,14 @@ def evaluate(model, bsz, data_x, data_y):
 @click.option('--nlayers', default=1)
 @click.option('--num_epochs', default=50)
 @click.option('--rnn_dim', default=1024)
-@click.option('--bsz', default=50)
+@click.option('--bsz', default=20)
 @click.option('--lr', default=0.001)
 @click.option('--twin', default=0.)
 def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
     # use hugo's binarized MNIST
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    
+
     log_interval = 100
     folder_id = 'mnist_twin_logs'
     model_id = 'mnist_twin{}'.format(twin)
@@ -175,7 +184,7 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
             all_loss = fwd_loss + bwd_loss + twin_loss
             all_loss.backward()
 
-            torch.nn.utils.clip_grad_norm(model.parameters(), 1.)
+            torch.nn.utils.clip_grad_norm(model.parameters(), 100.)
             opt.step()
 
             b_all_loss += all_loss.data[0]
@@ -219,7 +228,7 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
         else:
             for param_group in opt.param_groups:
                 lr = param_group['lr']
-                if lr > 0.00005:
+                if lr > 0.0002:
                     lr *= 0.5
                 param_group['lr'] = lr
 
