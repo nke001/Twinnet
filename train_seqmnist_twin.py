@@ -92,7 +92,7 @@ class Model(nn.Module):
         bsize = x.size(1)
         # run recurrent model
         x = self.embed(x)
-        vis, hidden = rnn_mod(x, hidden)       
+        vis, hidden = rnn_mod(x, hidden)
         vis_2d = vis.view(vis.size(0) * bsize, self.rnn_dim)
         # compute deep output layer or simple output
         if self.deep_out:
@@ -125,8 +125,8 @@ def evaluate(model, bsz, data_x, data_y):
         x = torch.from_numpy(x)
         inp = Variable(x[:-1], volatile=True).long().cuda()
         trg = Variable(x[1:], volatile=True).float().cuda()
-        out, vis, _ = model.rnn(inp, hidden)
-        loss = binary_crossentropy(trg, out).mean()
+        rets = model.rnn(inp, hidden)
+        loss = binary_crossentropy(trg, rets[0]).mean()
         valid_loss.append(loss.data[0])
     return np.asarray(valid_loss).mean()
 
