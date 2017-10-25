@@ -23,12 +23,10 @@ def repackage_hidden(h):
 @click.option('--filename')
 def generate(filename):
     seed = 1234
-    model = Model(1024, 1)
-    print('Loading model from {}'.format(filename))
-    state_dict = torch.load(filename)
-    print('DONE.')
-    model.load_state_dict(state_dict)
     rng = np.random.RandomState(seed)
+    print('Loading model from {}'.format(filename))
+    model = Model.load(filename)
+    print('DONE.')
     hidden = model.init_hidden(16)
     x = np.zeros((1, 16)).astype('int32')
     outs = [x]
