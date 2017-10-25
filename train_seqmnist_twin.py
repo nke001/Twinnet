@@ -91,12 +91,12 @@ class Model(nn.Module):
         prj_mod = self.fwd_prj_out if forward else self.bwd_prj_out
         bsize = x.size(1)
         # run recurrent model
-        enc_x = self.embed(x)
-        vis, hidden = rnn_mod(enc_x, hidden)       
+        x = self.embed(x)
+        vis, hidden = rnn_mod(x, hidden)       
         vis_2d = vis.view(vis.size(0) * bsize, self.rnn_dim)
         # compute deep output layer or simple output
         if self.deep_out:
-            x_ = enc_x.view(vis.size(0) * bsize, x.size(2))
+            x_ = x.view(vis.size(0) * bsize, x.size(2))
             out_ = F.leaky_relu(prv_mod(x_) + prj_mod(vis_2d), 0.3, False)
         else:
             out_ = vis_2d
