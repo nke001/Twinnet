@@ -101,9 +101,9 @@ def evaluate(model, bsz, data_x, data_y):
 
 
 @click.command()
-@click.option('--nlayers', default=1)
+@click.option('--nlayers', default=2)
 @click.option('--num_epochs', default=50)
-@click.option('--rnn_dim', default=1024)
+@click.option('--rnn_dim', default=512)
 @click.option('--bsz', default=20)
 @click.option('--lr', default=0.001)
 @click.option('--twin', default=0.)
@@ -225,11 +225,11 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
         if old_valid_loss > val_loss:
             old_valid_loss = val_loss
             torch.save(model.state_dict(), model_file_name)
-        else:
+
+        if epoch in [5, 10, 15]:
             for param_group in opt.param_groups:
                 lr = param_group['lr']
-                if lr > 0.0002:
-                    lr *= 0.5
+                lr *= 0.5
                 param_group['lr'] = lr
 
 
