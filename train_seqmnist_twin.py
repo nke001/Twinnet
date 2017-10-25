@@ -44,13 +44,9 @@ class Model(nn.Module):
         super(Model, self).__init__()
         self.rnn_dim = rnn_dim
         self.nlayers = nlayers
-        self.embed = nn.Embedding(2, 200)
-        self.fwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
-        self.bwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
-        self.fwd_prj_prev = nn.Linear(200, 512)
-        self.bwd_prj_prev = nn.Linear(200, 512)
-        self.fwd_prj_out = nn.Linear(rnn_dim, 512)
-        self.bwd_prj_out = nn.Linear(rnn_dim, 512)
+        self.embed = nn.Embedding(2, 300)
+        self.fwd_rnn = nn.LSTM(300, rnn_dim, nlayers, batch_first=False, dropout=0)
+        self.bwd_rnn = nn.LSTM(300, rnn_dim, nlayers, batch_first=False, dropout=0)
         self.fwd_out = nn.Sequential(nn.Linear(512, 1), nn.Sigmoid())
         self.bwd_out = nn.Sequential(nn.Linear(512, 1), nn.Sigmoid())
         self.fwd_aff = nn.Linear(rnn_dim, rnn_dim)
@@ -60,18 +56,29 @@ class Model(nn.Module):
         return (Variable(weight.new(self.nlayers, bsz, self.rnn_dim).zero_()),
                 Variable(weight.new(self.nlayers, bsz, self.rnn_dim).zero_()))
 
+    def save(self, filename):
+        state = {
+            'nlayers': self.nlayers,
+            'rnn_dim': self.rnn_dim,
+            'state_dict': self.state_dict()
+        }
+        torch.save(state, filename)
+
+    @classmethod
+    def load(filename):
+        state = torch.load(filename)
+        model = Model(state['rnn_dim'], state['nlayers'])
+        model.load_state_dict(state['state_dict'])
+        return model
+
     def rnn(self, x, hidden, forward=True):
         rnn_mod = self.fwd_rnn if forward else self.bwd_rnn
         out_mod = self.fwd_out if forward else self.bwd_out
-        prv_mod = self.fwd_prj_prev if forward else self.bwd_prj_prev
-        prj_mod = self.fwd_prj_out if forward else self.bwd_prj_out
         bsize = x.size(1)
         x = self.embed(x)
         vis, states = rnn_mod(x, hidden)
         vis_ = vis.view(vis.size(0) * bsize, self.rnn_dim)
-        x_ = x.view(vis.size(0) * bsize, x.size(2))
-        out_ = F.leaky_relu(prv_mod(x_) + prj_mod(vis_), 0.3, False)
-        out = out_mod(out_)
+        out = out_mod(vis_)
         out = out.view(vis.size(0), bsize)
         # transform forward with affine
         if forward:
@@ -101,22 +108,24 @@ def evaluate(model, bsz, data_x, data_y):
 
 
 @click.command()
-@click.option('--nlayers', default=1)
-@click.option('--num_epochs', default=50)
-@click.option('--rnn_dim', default=1024)
+@click.option('--expname', default='mnist_twin_logs/')
+@click.option('--nlayers', default=3)
+@click.option('--num_epochs', default=60)
+@click.option('--rnn_dim', default=512)
 @click.option('--bsz', default=20)
 @click.option('--lr', default=0.001)
 @click.option('--twin', default=0.)
-def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
+def train(expname, nlayers, num_epochs, rnn_dim, bsz, lr, twin):
     # use hugo's binarized MNIST
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
     log_interval = 100
-    folder_id = 'mnist_twin_logs'
+    if not os.path.exists(expname):
+        os.makedirs(expname)
     model_id = 'mnist_twin{}'.format(twin)
-    log_file_name = os.path.join(folder_id, model_id + '.txt')
-    model_file_name = os.path.join(folder_id, model_id + '.pt')
+    log_file_name = os.path.join(expname, model_id + '.txt')
+    model_file_name = os.path.join(expname, model_id + '.pt')
     log_file = open(log_file_name, 'w')
 
     # Hugo's version, for compatibility with SOTA.
@@ -184,7 +193,7 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
             all_loss = fwd_loss + bwd_loss + twin_loss
             all_loss.backward()
 
-            torch.nn.utils.clip_grad_norm(model.parameters(), 100.)
+            torch.nn.utils.clip_grad_norm(model.parameters(), 5.)
             opt.step()
 
             b_all_loss += all_loss.data[0]
@@ -212,7 +221,7 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
             step += 1
 
         # evaluate per epoch
-        print('--- Epoch finished ----')
+        print('---- Epoch finished ----')
         val_loss = evaluate(model, bsz, valid_x, valid_y)
         log_line = 'valid -- nll: %f' % (val_loss)
         print(log_line)
@@ -224,12 +233,12 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
 
         if old_valid_loss > val_loss:
             old_valid_loss = val_loss
-            torch.save(model.state_dict(), model_file_name)
-        else:
+            model.save(model_file_name)
+        
+        if epoch in [5, 10, 20]:
             for param_group in opt.param_groups:
                 lr = param_group['lr']
-                if lr > 0.0002:
-                    lr *= 0.5
+                lr *= 0.5
                 param_group['lr'] = lr
 
 
