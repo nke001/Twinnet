@@ -44,11 +44,11 @@ class Model(nn.Module):
         super(Model, self).__init__()
         self.rnn_dim = rnn_dim
         self.nlayers = nlayers
-        self.embed = nn.Embedding(2, 200)
-        self.fwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
-        self.bwd_rnn = nn.LSTM(200, rnn_dim, nlayers, batch_first=False, dropout=0)
-        self.fwd_prj_prev = nn.Linear(200, 512)
-        self.bwd_prj_prev = nn.Linear(200, 512)
+        self.embed = nn.Embedding(2, 300)
+        self.fwd_rnn = nn.LSTM(300, rnn_dim, nlayers, batch_first=False, dropout=0)
+        self.bwd_rnn = nn.LSTM(300, rnn_dim, nlayers, batch_first=False, dropout=0)
+        self.fwd_prj_prev = nn.Linear(300, 512)
+        self.bwd_prj_prev = nn.Linear(300, 512)
         self.fwd_prj_out = nn.Linear(rnn_dim, 512)
         self.bwd_prj_out = nn.Linear(rnn_dim, 512)
         self.fwd_out = nn.Sequential(nn.Linear(512, 1), nn.Sigmoid())
@@ -184,7 +184,7 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
             all_loss = fwd_loss + bwd_loss + twin_loss
             all_loss.backward()
 
-            torch.nn.utils.clip_grad_norm(model.parameters(), 100.)
+            torch.nn.utils.clip_grad_norm(model.parameters(), 5.)
             opt.step()
 
             b_all_loss += all_loss.data[0]
