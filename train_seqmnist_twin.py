@@ -239,6 +239,7 @@ def train(expname, nlayers, num_epochs, rnn_dim, deep_out, bsz, lr, twin):
                 t = time.time()
                 print(log_line)
                 log_file.write(log_line + '\n')
+                log_file.flush()
 
             step += 1
 
@@ -252,6 +253,7 @@ def train(expname, nlayers, num_epochs, rnn_dim, deep_out, bsz, lr, twin):
         log_line = 'test -- nll: %f' % (test_loss)
         print(log_line)
         log_file.write(log_line + '\n')
+        log_file.flush()
 
         if old_valid_loss > val_loss:
             old_valid_loss = val_loss
