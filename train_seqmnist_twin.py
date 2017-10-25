@@ -79,6 +79,7 @@ class Model(nn.Module):
     @classmethod
     def load(cls, filename):
         state = torch.load(filename)
+        print(state.keys())
         model = Model(state['rnn_dim'], state['nlayers'], deep_out=state['deep_out'])
         model.load_state_dict(state['state_dict'])
         return model
@@ -90,12 +91,12 @@ class Model(nn.Module):
         prj_mod = self.fwd_prj_out if forward else self.bwd_prj_out
         bsize = x.size(1)
         # run recurrent model
-        x = self.embed(x)
-        vis, states = rnn_mod(x, hidden)       
+        enc_x = self.embed(x)
+        vis, hidden = rnn_mod(enc_x, hidden)       
         vis_2d = vis.view(vis.size(0) * bsize, self.rnn_dim)
         # compute deep output layer or simple output
         if self.deep_out:
-            x_ = x.view(vis.size(0) * bsize, x.size(2))
+            x_ = enc_x.view(vis.size(0) * bsize, x.size(2))
             out_ = F.leaky_relu(prv_mod(x_) + prj_mod(vis_2d), 0.3, False)
         else:
             out_ = vis_2d
@@ -104,12 +105,14 @@ class Model(nn.Module):
         # transform forward with affine
         if forward:
             vis_ = self.fwd_aff(vis_2d)
-            vis = vis_.view(vis.size(0), bsize, self.rnn_dim)
-        return out, vis, states
+            twin_vis = vis_.view(vis.size(0), bsize, self.rnn_dim)
+        else:
+            twin_vis = vis
+        return out, twin_vis, hidden, vis
 
     def forward(self, fwd_x, bwd_x, hidden):
-        fwd_out, fwd_vis, _ = self.rnn(fwd_x, hidden)
-        bwd_out, bwd_vis, _ = self.rnn(bwd_x, hidden, forward=False)
+        fwd_out, fwd_vis, _, _ = self.rnn(fwd_x, hidden)
+        bwd_out, bwd_vis, _, _ = self.rnn(bwd_x, hidden, forward=False)
         return fwd_out, bwd_out, fwd_vis, bwd_vis
 
 
@@ -257,7 +260,7 @@ def train(expname, nlayers, num_epochs, rnn_dim, deep_out, bsz, lr, twin):
 
         if old_valid_loss > val_loss:
             old_valid_loss = val_loss
-            torch.save(model.state_dict(), model_file_name)
+            model.save(model_file_name)
 
         if epoch in [5, 10, 15]:
             for param_group in opt.param_groups:
