@@ -12,6 +12,7 @@ import os
 import random
 from itertools import chain
 import load
+import torch.nn.functional as F
 
 # set a bunch of seeds
 seed = 1234
@@ -27,6 +28,7 @@ def get_epoch_iterator(nbatch, X, Y=None):
         x = X[idx]
         if Y is not None:
             y = Y[idx]
+            y = np.eye(10)[y]
         else:
             y = None
         x = x.reshape((-1, 784)).transpose(1, 0)
@@ -39,43 +41,80 @@ def binary_crossentropy(x, p):
 
 
 class Model(nn.Module):
-    def __init__(self, rnn_dim, nlayers):
+    def __init__(self, rnn_dim, nlayers, deep_out=True):
         super(Model, self).__init__()
         self.rnn_dim = rnn_dim
         self.nlayers = nlayers
-        self.embed = nn.Embedding(2, 200)
-        self.fwd_rnn = nn.LSTM(200 + 10, rnn_dim, nlayers, batch_first=False, dropout=0)
-        self.bwd_rnn = nn.LSTM(200 + 10, rnn_dim, nlayers, batch_first=False, dropout=0)
+        self.deep_out = deep_out
+        self.embed = nn.Embedding(2, 300)
+        self.fwd_rnn = nn.LSTM(300 + 10, rnn_dim, nlayers, batch_first=False, dropout=0)
+        self.bwd_rnn = nn.LSTM(300 + 10, rnn_dim, nlayers, batch_first=False, dropout=0)
+        if self.deep_out:
+            # additional layer before the output
+            self.fwd_prj_prev = nn.Linear(300 + 10, 512)
+            self.bwd_prj_prev = nn.Linear(300 + 10, 512)
+            self.fwd_prj_out = nn.Linear(rnn_dim, 512)
+            self.bwd_prj_out = nn.Linear(rnn_dim, 512)
+        self.fwd_out = nn.Sequential(
+            nn.Linear(512 if deep_out else rnn_dim, 1),
+            nn.Sigmoid())
+        self.bwd_out = nn.Sequential(
+            nn.Linear(512 if deep_out else rnn_dim, 1),
+            nn.Sigmoid())
         self.fwd_aff = nn.Linear(rnn_dim, rnn_dim)
-        self.fwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
-        self.bwd_out = nn.Sequential(nn.Linear(rnn_dim, 1), nn.Sigmoid())
 
     def init_hidden(self, bsz):
         weight = next(self.parameters()).data
         return (Variable(weight.new(self.nlayers, bsz, self.rnn_dim).zero_()),
                 Variable(weight.new(self.nlayers, bsz, self.rnn_dim).zero_()))
 
+    def save(self, filename):
+        state = {
+            'nlayers': self.nlayers,
+            'rnn_dim': self.rnn_dim,
+            'deep_out': self.deep_out,
+            'state_dict': self.state_dict()
+        }
+        torch.save(state, filename)
+
+    @classmethod
+    def load(cls, filename):
+        state = torch.load(filename)
+        model = Model(state['rnn_dim'], state['nlayers'], deep_out=state['deep_out'])
+        model.load_state_dict(state['state_dict'])
+        return model
+
     def rnn(self, x, y, hidden, forward=True):
         rnn_mod = self.fwd_rnn if forward else self.bwd_rnn
         out_mod = self.fwd_out if forward else self.bwd_out
         bsize = x.size(1)
+        # run recurrent model
+        y = y.unsqueeze(0).expand(x.size(0), x.size(1), 10)
         x = self.embed(x)
-        # expand y and concatenate to the input x
-        y = y.unsqueeze(0).expand_as(x)
         x = torch.cat([x, y], 2)
-        vis, states = rnn_mod(x, hidden)
-        vis_ = vis.view(vis.size(0) * bsize, self.rnn_dim)
-        out = out_mod(vis_)
+        vis, hidden = rnn_mod(x, hidden)
+        vis_2d = vis.view(vis.size(0) * bsize, self.rnn_dim)
+        # compute deep output layer or simple output
+        if self.deep_out:
+            x_ = x.view(vis.size(0) * bsize, x.size(2))
+            prv_mod = self.fwd_prj_prev if forward else self.bwd_prj_prev
+            prj_mod = self.fwd_prj_out if forward else self.bwd_prj_out
+            out_ = F.leaky_relu(prv_mod(x_) + prj_mod(vis_2d), 0.3, False)
+        else:
+            out_ = vis_2d
+        out = out_mod(out_)
         out = out.view(vis.size(0), bsize)
         # transform forward with affine
         if forward:
-            vis_ = self.fwd_aff(vis_)
-            vis = vis_.view(vis.size(0), bsize, self.rnn_dim)
-        return out, vis, states
+            vis_ = self.fwd_aff(vis_2d)
+            twin_vis = vis_.view(vis.size(0), bsize, self.rnn_dim)
+        else:
+            twin_vis = vis
+        return out, twin_vis, hidden, vis
 
     def forward(self, fwd_x, bwd_x, y, hidden):
-        fwd_out, fwd_vis, _ = self.rnn(fwd_x, y, hidden)
-        bwd_out, bwd_vis, _ = self.rnn(bwd_x, y, hidden, forward=False)
+        fwd_out, fwd_vis, _, _ = self.rnn(fwd_x, y, hidden)
+        bwd_out, bwd_vis, _, _ = self.rnn(bwd_x, y, hidden, forward=False)
         return fwd_out, bwd_out, fwd_vis, bwd_vis
 
 
@@ -86,32 +125,35 @@ def evaluate(model, bsz, data_x, data_y):
     for x, y in get_epoch_iterator(bsz, data_x, data_y):
         x = np.concatenate([np.zeros((1, bsz)).astype('int32'), x], axis=0)
         x = torch.from_numpy(x)
+        y = Variable(torch.from_numpy(y)).float().cuda()
         inp = Variable(x[:-1], volatile=True).long().cuda()
         trg = Variable(x[1:], volatile=True).float().cuda()
-        y = Variable(torch.from_numpy(numpy.eye(10)[y]), volatile=True).float().cuda()
-        out, sta, _ = model.rnn(inp, y, hidden)
-        loss = binary_crossentropy(trg, out).mean()
+        ret = model.rnn(inp, y, hidden)
+        loss = binary_crossentropy(trg, ret[0]).mean()
         valid_loss.append(loss.data[0])
     return np.asarray(valid_loss).mean()
 
 
 @click.command()
-@click.option('--nlayers', default=1)
+@click.option('--expname', default='mnist_logs')
+@click.option('--nlayers', default=2)
 @click.option('--num_epochs', default=50)
-@click.option('--rnn_dim', default=1024)
-@click.option('--bsz', default=50)
+@click.option('--rnn_dim', default=512)
+@click.option('--deep_out', is_flag=True)
+@click.option('--bsz', default=20)
 @click.option('--lr', default=0.001)
 @click.option('--twin', default=0.)
-def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
+def train(expname, nlayers, num_epochs, rnn_dim, deep_out, bsz, lr, twin):
     # use hugo's binarized MNIST
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    
+
     log_interval = 100
-    folder_id = 'condmnist_twin_logs'
-    model_id = 'condmnist_twin{}'.format(twin)
-    log_file_name = os.path.join(folder_id, model_id + '.txt')
-    model_file_name = os.path.join(folder_id, model_id + '.pt')
+    model_id = 'cond_mnist_twin{}_do{}_nl{}_dim{}'.format(twin, deep_out, nlayers, rnn_dim)
+    if not os.path.exists(expname):
+        os.makedirs(expname)
+    log_file_name = os.path.join(expname, model_id + '.txt')
+    model_file_name = os.path.join(expname, model_id + '.pt')
     log_file = open(log_file_name, 'w')
 
     # "home-made" binarized MNIST version. Use with fixed binarization
@@ -124,10 +166,11 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
     train_x = binarize(rng, train_x)
     valid_x = binarize(rng, valid_x)
     test_x = binarize(rng, test_x)
+
     # First example looks like...
     print(train_x[0])
 
-    model = Model(rnn_dim, nlayers)
+    model = Model(rnn_dim, nlayers, deep_out=deep_out)
     model.cuda()
     hidden = model.init_hidden(bsz)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
@@ -137,7 +180,7 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
     for epoch in range(num_epochs):
         step = 0
         old_valid_loss = np.inf
-        b_fwd_loss, b_bwd_loss, b_twin_loss, b_all_loss = (0., 0., 0., 0.)
+        b_fwd_loss, b_bwd_loss, b_twin_loss, b_all_loss = 0., 0., 0., 0.
         model.train()
         print('Epoch {}: ({})'.format(epoch, model_id.upper()))
         for x, y in get_epoch_iterator(bsz, train_x, train_y):
@@ -145,6 +188,7 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
             # x = (0, x1, x2, x3, x4)
             # fwd_inp = (0, x1, x2, x3)
             # fwd_trg = (x1, x2, x3, x4)
+            y = Variable(torch.from_numpy(y)).float().cuda()
             x_ = np.concatenate([np.zeros((1, bsz)).astype('int32'), x], axis=0)
             fwd_x = torch.from_numpy(x_)
             fwd_inp = Variable(fwd_x[:-1]).long().cuda()
@@ -158,7 +202,6 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
             bwd_inp = Variable(bwd_x[:-1]).long().cuda()
             bwd_trg = Variable(bwd_x[1:]).float().cuda()
 
-            y = Variable(torch.from_numpy(numpy.eye(10)[y])).float().cuda()
             # compute all the states for forward and backward
             fwd_out, bwd_out, fwd_vis, bwd_vis = model(fwd_inp, bwd_inp, y, hidden)
             assert fwd_out.size(0) == 784
@@ -175,6 +218,7 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
             idx = torch.LongTensor(idx)
             idx = Variable(idx).cuda()
             bwd_vis_inv = bwd_vis.index_select(0, idx)
+            # interrupt gradient here
             bwd_vis_inv = bwd_vis_inv.detach()
 
             twin_loss = ((fwd_vis - bwd_vis_inv) ** 2).mean()
@@ -182,7 +226,7 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
             all_loss = fwd_loss + bwd_loss + twin_loss
             all_loss.backward()
 
-            torch.nn.utils.clip_grad_norm(model.parameters(), 1.)
+            torch.nn.utils.clip_grad_norm(model.parameters(), 5.)
             opt.step()
 
             b_all_loss += all_loss.data[0]
@@ -206,6 +250,7 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
                 t = time.time()
                 print(log_line)
                 log_file.write(log_line + '\n')
+                log_file.flush()
 
             step += 1
 
@@ -219,15 +264,16 @@ def train(nlayers, num_epochs, rnn_dim, bsz, lr, twin):
         log_line = 'test -- nll: %f' % (test_loss)
         print(log_line)
         log_file.write(log_line + '\n')
+        log_file.flush()
 
         if old_valid_loss > val_loss:
             old_valid_loss = val_loss
-            torch.save(model.state_dict(), model_file_name)
-        else:
+            model.save(model_file_name)
+
+        if epoch in [5, 10, 15]:
             for param_group in opt.param_groups:
                 lr = param_group['lr']
-                if lr > 0.00005:
-                    lr *= 0.5
+                lr *= 0.5
                 param_group['lr'] = lr
 
 
