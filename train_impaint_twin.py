@@ -184,10 +184,12 @@ def evaluate(model, bsz, data, visibility=0.5):
 def train(expname, nlayers, visibility, num_epochs,
           rnn_dim, deep_out, bsz, lr, twin):
     assert not deep_out
+    assert visibility <= 1.0
+
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-
     npixels_visible = int(visibility * 784)
+    npixels_hidden = int((1. - visibility) * 784)
     print('Pixels visible: {}'.format(npixels_visible))
     log_interval = 100
     model_id = 'inpaint_twin{}_do{}_nl{}_dim{}_vis{}'.format(
@@ -243,8 +245,8 @@ def train(expname, nlayers, visibility, num_epochs,
             # compute all the states for forward and backward
             fwd_out, bwd_out, fwd_vis, bwd_vis = \
                 model(vis_inp, fwd_inp, bwd_inp, hidden)
-            assert fwd_out.size(0) == npixels_visible
-            assert bwd_out.size(0) == npixels_visible
+            assert fwd_out.size(0) == npixels_hidden
+            assert bwd_out.size(0) == npixels_hidden
             fwd_loss = binary_crossentropy(fwd_trg, fwd_out).mean()
             bwd_loss = binary_crossentropy(bwd_trg, bwd_out).mean()
             bwd_loss = bwd_loss * (twin > 0.)
