@@ -240,7 +240,11 @@ def train(expname, nlayers, num_epochs, rnn_dim, deep_out, bsz, lr, twin):
             # interrupt gradient here
             bwd_vis_inv = bwd_vis_inv.detach()
 
-            twin_loss = ((fwd_vis - bwd_vis_inv) ** 2).mean()
+            # mean over batch, over dimensions
+            twin_loss = ((fwd_vis - bwd_vis_inv) ** 2).mean(2)
+            twin_loss = twin_loss.mean(1)
+            # sum over timesteps (ratio number of layers)
+            twin_loss = twin_loss.sum(0) / nlayers
             twin_loss = twin_loss * twin
             all_loss = fwd_loss + bwd_loss + twin_loss
             all_loss.backward()
