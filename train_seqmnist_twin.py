@@ -39,6 +39,32 @@ def binary_crossentropy(x, p):
                        torch.log(1 - p + 1e-6) * (1. - x)), 0)
 
 
+class MyLSTM(nn.Module):
+    def __init__(self, ninp, rnn_dim, nlayers):
+        super(MyLSTM, self).__init__()
+        self.rnns = []
+        for i in range(nlayers):
+            self.rnns.append(nn.LSTM(ninp if i == 0 else rnn_dim, rnn_dim, 1))
+        self.rnns = nn.ModuleList(self.rnns)
+
+    def forward(self, x, hidden):
+        length = x.size(0)
+        nlayers = len(self.rnns)
+        inputs = [x]
+        states = []
+        output = []
+        for i in range(nlayers):
+            vis, hid = self.rnns[i](inputs[i], (
+                hidden[0][i].unsqueeze(0),
+                hidden[1][i].unsqueeze(0)))
+            states.append(hid)
+            output.append(vis)
+            inputs.append(vis)
+        hidden = (torch.cat([s[0] for s in states], 0),
+                  torch.cat([s[1] for s in states], 0))
+        return output[0], torch.cat(output, 0), hidden
+
+
 class Model(nn.Module):
     def __init__(self, rnn_dim, nlayers, deep_out=True):
         super(Model, self).__init__()
@@ -46,8 +72,8 @@ class Model(nn.Module):
         self.nlayers = nlayers
         self.deep_out = deep_out
         self.embed = nn.Embedding(2, 300)
-        self.fwd_rnn = nn.LSTM(300, rnn_dim, nlayers, batch_first=False, dropout=0)
-        self.bwd_rnn = nn.LSTM(300, rnn_dim, nlayers, batch_first=False, dropout=0)
+        self.fwd_rnn = MyLSTM(300, rnn_dim, nlayers)
+        self.bwd_rnn = MyLSTM(300, rnn_dim, nlayers)
         if self.deep_out:
             # additional layer before the output
             self.fwd_prj_prev = nn.Linear(300, 512)
@@ -79,7 +105,8 @@ class Model(nn.Module):
     @classmethod
     def load(cls, filename):
         state = torch.load(filename)
-        model = Model(state['rnn_dim'], state['nlayers'], deep_out=state['deep_out'])
+        model = Model(
+            state['rnn_dim'], state['nlayers'], deep_out=state['deep_out'])
         model.load_state_dict(state['state_dict'])
         return model
 
@@ -89,25 +116,24 @@ class Model(nn.Module):
         bsize = x.size(1)
         # run recurrent model
         x = self.embed(x)
-        vis, hidden = rnn_mod(x, hidden)
-        vis_2d = vis.view(vis.size(0) * bsize, self.rnn_dim)
+        enc_x = x
+        out, vis, hidden = rnn_mod(x, hidden)
+        out_2d = out.view(out.size(0) * bsize, self.rnn_dim)
         # compute deep output layer or simple output
         if self.deep_out:
-            x_ = x.view(vis.size(0) * bsize, x.size(2))
+            x_ = x.view(out.size(0) * bsize, x.size(2))
             prv_mod = self.fwd_prj_prev if forward else self.bwd_prj_prev
             prj_mod = self.fwd_prj_out if forward else self.bwd_prj_out
-            out_ = F.leaky_relu(prv_mod(x_) + prj_mod(vis_2d), 0.3, False)
-        else:
-            out_ = vis_2d
-        out = out_mod(out_)
-        out = out.view(vis.size(0), bsize)
+            out_2d = F.leaky_relu(prv_mod(x_) + prj_mod(out_2d), 0.3, False)
+        out_2d = out_mod(out_2d)
+        out_2d = out_2d.view(out.size(0), bsize)
         # transform forward with affine
+        twin_vis = vis
         if forward:
-            vis_ = self.fwd_aff(vis_2d)
+            vis_ = vis.view(vis.size(0) * bsize, self.rnn_dim)
+            vis_ = self.fwd_aff(vis_)
             twin_vis = vis_.view(vis.size(0), bsize, self.rnn_dim)
-        else:
-            twin_vis = vis
-        return out, twin_vis, hidden, vis
+        return out_2d, twin_vis, hidden, enc_x
 
     def forward(self, fwd_x, bwd_x, hidden):
         fwd_out, fwd_vis, _, _ = self.rnn(fwd_x, hidden)
@@ -188,13 +214,15 @@ def train(expname, nlayers, num_epochs, rnn_dim, deep_out, bsz, lr, twin):
             # bwd_inp = (0, x4, x3, x2)
             # bwd_trg = (x4, x3, x2, x1)
             bwd_x = numpy.flip(x, 0).copy()
-            x_ = np.concatenate([np.zeros((1, bsz)).astype('int32'), bwd_x], axis=0)
+            x_ = np.concatenate([
+                np.zeros((1, bsz)).astype('int32'), bwd_x], axis=0)
             bwd_x = torch.from_numpy(x_)
             bwd_inp = Variable(bwd_x[:-1]).long().cuda()
             bwd_trg = Variable(bwd_x[1:]).float().cuda()
 
             # compute all the states for forward and backward
-            fwd_out, bwd_out, fwd_vis, bwd_vis = model(fwd_inp, bwd_inp, hidden)
+            fwd_out, bwd_out, fwd_vis, bwd_vis = \
+                model(fwd_inp, bwd_inp, hidden)
             assert fwd_out.size(0) == 784
             assert bwd_out.size(0) == 784
             fwd_loss = binary_crossentropy(fwd_trg, fwd_out).mean()

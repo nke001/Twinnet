@@ -18,6 +18,20 @@ def repackage_hidden(h):
     else:
         return tuple(repackage_hidden(v) for v in h)
 
+def grayscale_grid_vis(X, nh, nw, save_path=None):
+    h, w = X[0].shape[:2]
+    h = h + 2  # make room for  a little border
+    w = w + 2
+    x_shell = np.zeros((h, w)) + ((np.max(X) - np.min(X)) / 2.)
+    img = np.zeros((h * nh, w * nw))
+    for n, x in enumerate(X):
+        j = n // nw
+        i = n % nw
+        x_shell[1:-1, 1:-1] = x[:, :]
+        img[(j * h):(j * h + h), (i * w):(i * w + w)] = x_shell[:, :]
+    if save_path is not None:
+        scipy.misc.imsave(save_path, img)
+    return img
 
 @click.command()
 @click.option('--filename')
@@ -38,7 +52,8 @@ def generate(filename):
         smp = (out > rng.rand(out.shape)).astype('int32')
         outs.append(smp)
         hidden = repackage_hidden(sta)
-
-    print(np.concatenate(outs, 1))
-
+    outs = outs[1:]
+    outs = np.concatenate(outs, 0).T
+    outs = outs.reshape((16, 28, 28))
+    grayscale_grid_vis(outs, 4, 4, '{}_gen.png'.format(filename))
 generate()
