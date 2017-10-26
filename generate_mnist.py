@@ -33,7 +33,7 @@ def generate(filename):
     for i in range(784):
         print('Generating pixel... {}'.format(i))
         last_x = Variable(torch.from_numpy(outs[-1]))
-        out, vis, sta = model.rnn(last_x, hidden)
+        out, vis, sta, _ = model.rnn(last_x, hidden)
         out = (out.cpu()).data
         smp = (out > rng.rand(out.shape)).astype('int32')
         outs.append(smp)

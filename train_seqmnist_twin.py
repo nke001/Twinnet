@@ -79,7 +79,6 @@ class Model(nn.Module):
     @classmethod
     def load(cls, filename):
         state = torch.load(filename)
-        print(state.keys())
         model = Model(state['rnn_dim'], state['nlayers'], deep_out=state['deep_out'])
         model.load_state_dict(state['state_dict'])
         return model
@@ -87,8 +86,6 @@ class Model(nn.Module):
     def rnn(self, x, hidden, forward=True):
         rnn_mod = self.fwd_rnn if forward else self.bwd_rnn
         out_mod = self.fwd_out if forward else self.bwd_out
-        prv_mod = self.fwd_prj_prev if forward else self.bwd_prj_prev
-        prj_mod = self.fwd_prj_out if forward else self.bwd_prj_out
         bsize = x.size(1)
         # run recurrent model
         x = self.embed(x)
@@ -97,6 +94,8 @@ class Model(nn.Module):
         # compute deep output layer or simple output
         if self.deep_out:
             x_ = x.view(vis.size(0) * bsize, x.size(2))
+            prv_mod = self.fwd_prj_prev if forward else self.bwd_prj_prev
+            prj_mod = self.fwd_prj_out if forward else self.bwd_prj_out
             out_ = F.leaky_relu(prv_mod(x_) + prj_mod(vis_2d), 0.3, False)
         else:
             out_ = vis_2d
@@ -125,8 +124,8 @@ def evaluate(model, bsz, data_x, data_y):
         x = torch.from_numpy(x)
         inp = Variable(x[:-1], volatile=True).long().cuda()
         trg = Variable(x[1:], volatile=True).float().cuda()
-        rets = model.rnn(inp, hidden)
-        loss = binary_crossentropy(trg, rets[0]).mean()
+        ret = model.rnn(inp, hidden)
+        loss = binary_crossentropy(trg, ret[0]).mean()
         valid_loss.append(loss.data[0])
     return np.asarray(valid_loss).mean()
 
