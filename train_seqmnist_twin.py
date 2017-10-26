@@ -38,33 +38,6 @@ def binary_crossentropy(x, p):
     return -torch.sum((torch.log(p + 1e-6) * x +
                        torch.log(1 - p + 1e-6) * (1. - x)), 0)
 
-
-class MyLSTM(nn.Module):
-    def __init__(self, ninp, rnn_dim, nlayers):
-        super(MyLSTM, self).__init__()
-        self.rnns = []
-        for i in range(nlayers):
-            self.rnns.append(nn.LSTM(ninp if i == 0 else rnn_dim, rnn_dim, 1))
-        self.rnns = nn.ModuleList(self.rnns)
-
-    def forward(self, x, hidden):
-        length = x.size(0)
-        nlayers = len(self.rnns)
-        inputs = [x]
-        states = []
-        output = []
-        for i in range(nlayers):
-            vis, hid = self.rnns[i](inputs[i], (
-                hidden[0][i].unsqueeze(0),
-                hidden[1][i].unsqueeze(0)))
-            states.append(hid)
-            output.append(vis)
-            inputs.append(vis)
-        hidden = (torch.cat([s[0] for s in states], 0),
-                  torch.cat([s[1] for s in states], 0))
-        return output[0], torch.cat(output, 0), hidden
-
-
 class Model(nn.Module):
     def __init__(self, rnn_dim, nlayers, deep_out=True):
         super(Model, self).__init__()
@@ -72,8 +45,8 @@ class Model(nn.Module):
         self.nlayers = nlayers
         self.deep_out = deep_out
         self.embed = nn.Embedding(2, 300)
-        self.fwd_rnn = MyLSTM(300, rnn_dim, nlayers)
-        self.bwd_rnn = MyLSTM(300, rnn_dim, nlayers)
+        self.fwd_rnn = nn.LSTM(300, rnn_dim, nlayers)
+        self.bwd_rnn = nn.LSTM(300, rnn_dim, nlayers)
         if self.deep_out:
             # additional layer before the output
             self.fwd_prj_prev = nn.Linear(300, 512)
@@ -117,7 +90,7 @@ class Model(nn.Module):
         # run recurrent model
         x = self.embed(x)
         enc_x = x
-        out, vis, hidden = rnn_mod(x, hidden)
+        out, hidden = rnn_mod(x, hidden)
         out_2d = out.view(out.size(0) * bsize, self.rnn_dim)
         # compute deep output layer or simple output
         if self.deep_out:
@@ -128,11 +101,11 @@ class Model(nn.Module):
         out_2d = out_mod(out_2d)
         out_2d = out_2d.view(out.size(0), bsize)
         # transform forward with affine
-        twin_vis = vis
+        twin_vis = out
         if forward:
-            vis_ = vis.view(vis.size(0) * bsize, self.rnn_dim)
+            vis_ = out.view(out.size(0) * bsize, self.rnn_dim)
             vis_ = self.fwd_aff(vis_)
-            twin_vis = vis_.view(vis.size(0), bsize, self.rnn_dim)
+            twin_vis = vis_.view(out.size(0), bsize, self.rnn_dim)
         return out_2d, twin_vis, hidden, enc_x
 
     def forward(self, fwd_x, bwd_x, hidden):
@@ -193,6 +166,14 @@ def train(expname, nlayers, num_epochs, rnn_dim, deep_out, bsz, lr, twin):
     hidden = model.init_hidden(bsz)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
 
+    # reversing backstates
+    # fwd_vis = (out_x1, out_x2, out_x3, out_x4)
+    # bwd_vis_inv = (out_x1, out_x2, out_x3, out_x4)
+    # therefore match: fwd_vis and bwd_vis_inv
+    idx = np.arange(784)[::-1].tolist()
+    idx = torch.LongTensor(idx)
+    idx = Variable(idx).cuda()
+
     nbatches = train_x.shape[0] // bsz
     t = time.time()
     for epoch in range(num_epochs):
@@ -225,17 +206,12 @@ def train(expname, nlayers, num_epochs, rnn_dim, deep_out, bsz, lr, twin):
                 model(fwd_inp, bwd_inp, hidden)
             assert fwd_out.size(0) == 784
             assert bwd_out.size(0) == 784
+            assert fwd_vis.size(0) == 784
+            assert bwd_vis.size(0) == 784
             fwd_loss = binary_crossentropy(fwd_trg, fwd_out).mean()
             bwd_loss = binary_crossentropy(bwd_trg, bwd_out).mean()
             bwd_loss = bwd_loss * (twin > 0.)
 
-            # reversing backstates
-            # fwd_vis = (out_x1, out_x2, out_x3, out_x4)
-            # bwd_vis_inv = (out_x1, out_x2, out_x3, out_x4)
-            # therefore match: fwd_vis and bwd_vis_inv
-            idx = np.arange(bwd_vis.size(0))[::-1].tolist()
-            idx = torch.LongTensor(idx)
-            idx = Variable(idx).cuda()
             bwd_vis_inv = bwd_vis.index_select(0, idx)
             # interrupt gradient here
             bwd_vis_inv = bwd_vis_inv.detach()
