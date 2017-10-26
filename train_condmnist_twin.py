@@ -116,8 +116,8 @@ class Model(nn.Module):
         bsize = x.size(1)
         # run recurrent model
         y = y.unsqueeze(0).expand(x.size(0), x.size(1), 10)
-        x = self.embed(x)
-        x = torch.cat([x, y], 2)
+        enc_x = self.embed(x)
+        x = torch.cat([enc_x, y], 2)
         out, vis, hidden = rnn_mod(x, hidden)
         out_2d = out.view(out.size(0) * bsize, self.rnn_dim)
         # compute deep output layer or simple output
