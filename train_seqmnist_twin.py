@@ -187,19 +187,18 @@ def train(expname, nlayers, num_epochs, rnn_dim, deep_out, bsz, lr, twin):
             # x = (0, x1, x2, x3, x4)
             # fwd_inp = (0, x1, x2, x3)
             # fwd_trg = (x1, x2, x3, x4)
-            x_ = np.concatenate([np.zeros((1, bsz)).astype('int32'), x], axis=0)
-            fwd_x = torch.from_numpy(x_)
-            fwd_inp = Variable(fwd_x[:-1]).long().cuda()
-            fwd_trg = Variable(fwd_x[1:]).float().cuda()
+            x = Variable(torch.from_numpy(x)).long().cuda()
+
+            x_ = torch.cat((x[:1] * 0, x), 0)
+            fwd_inp = x_[:-1]
+            fwd_trg = x_[1:].float()
             # bwd_x = (0, x4, x3, x2, x1)
             # bwd_inp = (0, x4, x3, x2)
             # bwd_trg = (x4, x3, x2, x1)
-            bwd_x = numpy.flip(x, 0).copy()
-            x_ = np.concatenate([
-                np.zeros((1, bsz)).astype('int32'), bwd_x], axis=0)
-            bwd_x = torch.from_numpy(x_)
-            bwd_inp = Variable(bwd_x[:-1]).long().cuda()
-            bwd_trg = Variable(bwd_x[1:]).float().cuda()
+            bx_ = x_.index_select(0, idx)
+            bx_ = torch.cat((x[:1] * 0, x), 0) 
+            bwd_inp = bx_[:-1]
+            bwd_trg = bx_[1:].float()
 
             # compute all the states for forward and backward
             fwd_out, bwd_out, fwd_vis, bwd_vis = \
