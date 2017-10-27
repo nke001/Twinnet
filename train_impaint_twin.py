@@ -201,7 +201,7 @@ def train(expname, nlayers, visibility, num_epochs,
         print('Epoch {}: ({})'.format(epoch, model_id.upper()))
         for x in get_epoch_iterator(bsz, train_x, show=visibility):
             x = Variable(torch.from_numpy(x)).long().cuda()
-            vis_x = x[:npixels_visible]
+            vis_x = x[:min(npixels_visible, 1)]
             hid_x = x[npixels_visible:]
 
             x_ = torch.cat((hid_x[:1] * 0, hid_x), 0)
