@@ -119,20 +119,20 @@ class Model(nn.Module):
         return fwd_out, bwd_out, fwd_vis, bwd_vis
 
 
-def evaluate(model, bsz, data, visibility=0.5):
+def evaluate(model, bsz, data, npixels_visible):
     model.eval()
     hidden = model.init_hidden(bsz)
     valid_loss = []
-    for x in get_epoch_iterator(bsz, data, show=visibility):
+    for x in get_epoch_iterator(bsz, data):
         x = Variable(torch.from_numpy(x)).long().cuda()
-        vis_x = x[:npixels_visible]
+        vis_x = x[:max(npixels_visible, 1)]
         hid_x = x[npixels_visible:]
         x_ = torch.cat((hid_x[:1] * 0, hid_x), 0)
         inp = x_[:-1]
         trg = x_[1:].float()
         ret = model.rnn(vis_x, hidden)
         ret = model.rnn(inp, ret[-2])
-        loss = binary_crossentropy(fwd_trg, ret[0]).mean()
+        loss = binary_crossentropy(trg, ret[0]).mean()
         valid_loss.append(loss.data[0])
     return np.asarray(valid_loss).mean()
 
@@ -141,7 +141,7 @@ def evaluate(model, bsz, data, visibility=0.5):
 @click.option('--expname', default='inpaint_logs')
 @click.option('--nlayers', default=3)
 @click.option('--visibility', default=0.5)
-@click.option('--num_epochs', default=50)
+@click.option('--num_epochs', default=20)
 @click.option('--rnn_dim', default=512)
 @click.option('--deep_out', is_flag=True)
 @click.option('--bsz', default=20)
@@ -166,17 +166,8 @@ def train(expname, nlayers, visibility, num_epochs,
     model_file_name = os.path.join(expname, model_id + '.pt')
     log_file = open(log_file_name, 'w')
 
-    # "home-made" binarized MNIST version. Use with fixed binarization
-    # during training.
-    def binarize(rng, x):
-        return (x > rng.rand(x.shape[0], x.shape[1])).astype('int32')
-
-    train_x, valid_x, test_x, train_y, valid_y, test_y = \
-        load.load_mnist('./mnist/data')
-    train_x = binarize(rng, train_x)
-    valid_x = binarize(rng, valid_x)
-    test_x = binarize(rng, test_x)
-    # First example looks like...
+    train_x, valid_x, test_x = \
+            load.load_binarized_mnist('./mnist/data')
     print(train_x[0])
 
     model = Model(rnn_dim, nlayers, deep_out=deep_out)
@@ -264,11 +255,11 @@ def train(expname, nlayers, visibility, num_epochs,
 
         # evaluate per epoch
         print('--- Epoch finished ----')
-        val_loss = evaluate(model, bsz, seq_width)
+        val_loss = evaluate(model, bsz, valid_x, npixels_visible)
         log_line = 'valid -- epoch %s, cost %f' % (epoch, val_loss)
         print(log_line)
         log_file.write(log_line + '\n')
-        test_loss = evaluate(model, bsz, seq_width)
+        test_loss = evaluate(model, bsz, test_x, npixels_visible)
         log_line = 'test -- epoch %s, cost %f' % (epoch, test_loss)
         print(log_line)
         log_file.write(log_line + '\n')
