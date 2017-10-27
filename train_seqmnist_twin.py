@@ -166,10 +166,6 @@ def train(expname, nlayers, num_epochs, rnn_dim, deep_out, bsz, lr, twin):
     hidden = model.init_hidden(bsz)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
 
-    # reversing backstates
-    # fwd_vis = (out_x1, out_x2, out_x3, out_x4)
-    # bwd_vis_inv = (out_x1, out_x2, out_x3, out_x4)
-    # therefore match: fwd_vis and bwd_vis_inv
     idx = np.arange(784)[::-1].tolist()
     idx = torch.LongTensor(idx)
     idx = Variable(idx).cuda()
@@ -184,19 +180,15 @@ def train(expname, nlayers, num_epochs, rnn_dim, deep_out, bsz, lr, twin):
         print('Epoch {}: ({})'.format(epoch, model_id.upper()))
         for x, _ in get_epoch_iterator(bsz, train_x, train_y):
             opt.zero_grad()
-            # x = (0, x1, x2, x3, x4)
-            # fwd_inp = (0, x1, x2, x3)
-            # fwd_trg = (x1, x2, x3, x4)
             x = Variable(torch.from_numpy(x)).long().cuda()
-
             x_ = torch.cat((x[:1] * 0, x), 0)
+            assert x_.size(0) == 785
             fwd_inp = x_[:-1]
             fwd_trg = x_[1:].float()
-            # bwd_x = (0, x4, x3, x2, x1)
-            # bwd_inp = (0, x4, x3, x2)
-            # bwd_trg = (x4, x3, x2, x1)
-            bx_ = x_.index_select(0, idx)
-            bx_ = torch.cat((x[:1] * 0, x), 0) 
+
+            bx_ = x.index_select(0, idx)
+            bx_ = torch.cat((x[:1] * 0, bx_), 0) 
+            assert bx_.size(0) == 785
             bwd_inp = bx_[:-1]
             bwd_trg = bx_[1:].float()
 
