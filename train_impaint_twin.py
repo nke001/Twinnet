@@ -22,7 +22,6 @@ rng = np.random.RandomState(seed)
 def get_epoch_iterator(nbatch, X, Y=None, show=0.5):
     ndata = X.shape[0]
     samples = rng.permutation(np.arange(ndata))
-
     for b in range(0, ndata, nbatch):
         idx = samples[b:b + nbatch]
         assert len(idx) == nbatch
@@ -33,44 +32,12 @@ def get_epoch_iterator(nbatch, X, Y=None, show=0.5):
         else:
             y = None
         x = x.reshape((-1, 784)).transpose(1, 0)
-        # occlude x
-        assert show in [0.25, 0.5, 0.75]
-        pix_vis = int(show * 784)
-        x_vis = x[:pix_vis]
-        x_hid = x[pix_vis:]
-        yield (x_vis, x_hid)
+        yield x
 
 
 def binary_crossentropy(x, p):
     return -torch.sum((torch.log(p + 1e-6) * x +
                        torch.log(1 - p + 1e-6) * (1. - x)), 0)
-
-
-class MyLSTM(nn.Module):
-    def __init__(self, ninp, rnn_dim, nlayers):
-        super(MyLSTM, self).__init__()
-        self.rnns = []
-        for i in range(nlayers):
-            self.rnns.append(nn.LSTM(ninp if i == 0 else rnn_dim, rnn_dim, 1))
-        self.rnns = nn.ModuleList(self.rnns)
-
-    def forward(self, x, hidden):
-        length = x.size(0)
-        nlayers = len(self.rnns)
-        inputs = [x]
-        states = []
-        output = []
-        for i in range(nlayers):
-            vis, hid = self.rnns[i](inputs[i], (
-                hidden[0][i].unsqueeze(0),
-                hidden[1][i].unsqueeze(0)))
-            states.append(hid)
-            output.append(vis)
-            inputs.append(vis)
-        hidden = (torch.cat([s[0] for s in states], 0),
-                  torch.cat([s[1] for s in states], 0))
-        return output[0], torch.cat(output, 0), hidden
-
 
 class Model(nn.Module):
     def __init__(self, rnn_dim, nlayers, deep_out=True):
@@ -79,8 +46,8 @@ class Model(nn.Module):
         self.nlayers = nlayers
         self.deep_out = deep_out
         self.embed = nn.Embedding(2, 300)
-        self.fwd_rnn = MyLSTM(300, rnn_dim, nlayers)
-        self.bwd_rnn = MyLSTM(300, rnn_dim, nlayers)
+        self.fwd_rnn = nn.LSTM(300, rnn_dim, nlayers)
+        self.bwd_rnn = nn.LSTM(300, rnn_dim, nlayers)
         if self.deep_out:
             # additional layer before the output
             self.fwd_prj_prev = nn.Linear(300, 512)
@@ -125,7 +92,7 @@ class Model(nn.Module):
         # run recurrent model
         x = self.embed(x)
         enc_x = x
-        out, vis, hidden = rnn_mod(x, hidden)
+        out, hidden = rnn_mod(x, hidden)
         out_2d = out.view(out.size(0) * bsize, self.rnn_dim)
         # compute deep output layer or simple output
         if self.deep_out:
@@ -136,20 +103,19 @@ class Model(nn.Module):
         out_2d = out_mod(out_2d)
         out_2d = out_2d.view(out.size(0), bsize)
         # transform forward with affine
-        twin_vis = vis
+        twin_vis = out
         if forward:
-            vis_ = vis.view(vis.size(0) * bsize, self.rnn_dim)
+            vis_ = out.view(out.size(0) * bsize, self.rnn_dim)
             vis_ = self.fwd_aff(vis_)
-            twin_vis = vis_.view(vis.size(0), bsize, self.rnn_dim)
+            twin_vis = vis_.view(out.size(0), bsize, self.rnn_dim)
         return out_2d, twin_vis, hidden, enc_x
 
     def forward(self, vis_x, hid_x_fwd, hid_x_bwd, hidden):
-        #
-        fwd_out, fwd_vis, fwd_hid, _ = self.rnn(vis_x, hidden)
-        bwd_out, bwd_vis, bwd_hid, _ = self.rnn(vis_x, hidden, forward=False)
-        # decode
+        _, _, fwd_hid, _ = self.rnn(vis_x, hidden)
         fwd_out, fwd_vis, _, _ = self.rnn(hid_x_fwd, fwd_hid)
-        bwd_out, bwd_vis, _, _ = self.rnn(hid_x_bwd, bwd_hid, forward=False)
+        bwd_out, bwd_vis, _, _ = self.rnn(
+                hid_x_bwd, (fwd_hid[0].detach(), fwd_hid[1].detach()),
+                forward=False)
         return fwd_out, bwd_out, fwd_vis, bwd_vis
 
 
@@ -157,15 +123,15 @@ def evaluate(model, bsz, data, visibility=0.5):
     model.eval()
     hidden = model.init_hidden(bsz)
     valid_loss = []
-    for vis_x, hid_x in get_epoch_iterator(bsz, data, show=visibility):
-        vis_x = Variable(torch.from_numpy(vis_x)).long().cuda()
-        x_ = np.concatenate([
-            np.zeros((1, bsz)).astype('int32'), hid_x], axis=0)
-        x = torch.from_numpy(x_)
-        inp = Variable(x[:-1]).long().cuda()
-        trg = Variable(x[1:]).float().cuda()
+    for x in get_epoch_iterator(bsz, data, show=visibility):
+        x = Variable(torch.from_numpy(x)).long().cuda()
+        vis_x = x[:npixels_visible]
+        hid_x = x[npixels_visible:]
+        x_ = torch.cat((hid_x[:1] * 0, hid_x), 0)
+        inp = x_[:-1]
+        trg = x_[1:].float()
         ret = model.rnn(vis_x, hidden)
-        ret = model.rnn(fwd_inp, ret[-1])
+        ret = model.rnn(inp, ret[-2])
         loss = binary_crossentropy(fwd_trg, ret[0]).mean()
         valid_loss.append(loss.data[0])
     return np.asarray(valid_loss).mean()
@@ -218,8 +184,14 @@ def train(expname, nlayers, visibility, num_epochs,
     hidden = model.init_hidden(bsz)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
 
-    nbatches = 500
+    nbatches = len(train_x)
     t = time.time()
+
+    # idx to invert states
+    idx = np.arange(npixels_hidden)[::-1].tolist()
+    idx = torch.LongTensor(idx)
+    idx = Variable(idx).cuda()
+
     for epoch in range(num_epochs):
         step = 0
         old_valid_loss = np.inf
@@ -227,42 +199,37 @@ def train(expname, nlayers, visibility, num_epochs,
         model.train()
 
         print('Epoch {}: ({})'.format(epoch, model_id.upper()))
-        for vis_x, hid_x in get_epoch_iterator(bsz, train_x, show=visibility):
-            vis_inp = Variable(torch.from_numpy(vis_x)).long().cuda()
-            x_ = np.concatenate([
-                np.zeros((1, bsz)).astype('int32'), hid_x], axis=0)
-            x = torch.from_numpy(x_)
-            fwd_inp = Variable(x[:-1]).long().cuda()
-            fwd_trg = Variable(x[1:]).float().cuda()
+        for x in get_epoch_iterator(bsz, train_x, show=visibility):
+            x = Variable(torch.from_numpy(x)).long().cuda()
+            vis_x = x[:npixels_visible]
+            hid_x = x[npixels_visible:]
 
-            bwd_x = numpy.flip(hid_x, 0).copy()
-            bwd_x = np.concatenate([
-                np.zeros((1, bsz)).astype('int32'), bwd_x], axis=0)
-            bwd_x = torch.from_numpy(bwd_x)
-            bwd_inp = Variable(bwd_x[:-1]).long().cuda()
-            bwd_trg = Variable(bwd_x[1:]).float().cuda()
+            x_ = torch.cat((hid_x[:1] * 0, hid_x), 0)
+            fwd_inp = x_[:-1]
+            fwd_trg = x_[1:].float()
+
+            bx_ = hid_x.index_select(0, idx)
+            bx_ = torch.cat((hid_x[:1] * 0, bx_), 0)
+            bwd_inp = bx_[:-1]
+            bwd_trg = bx_[1:].float()
 
             # compute all the states for forward and backward
             fwd_out, bwd_out, fwd_vis, bwd_vis = \
-                model(vis_inp, fwd_inp, bwd_inp, hidden)
+                    model(vis_x, fwd_inp, bwd_inp, hidden)
             assert fwd_out.size(0) == npixels_hidden
             assert bwd_out.size(0) == npixels_hidden
+            assert fwd_vis.size(0) == npixels_hidden
+            assert bwd_vis.size(0) == npixels_hidden
             fwd_loss = binary_crossentropy(fwd_trg, fwd_out).mean()
             bwd_loss = binary_crossentropy(bwd_trg, bwd_out).mean()
             bwd_loss = bwd_loss * (twin > 0.)
-
-            idx = np.arange(bwd_vis.size(0))[::-1].tolist()
-            idx = torch.LongTensor(idx)
-            idx = Variable(idx).cuda()
+            # invert
             bwd_vis_inv = bwd_vis.index_select(0, idx)
             # interrupt gradient here
             bwd_vis_inv = bwd_vis_inv.detach()
 
             # mean over batch, over dimensions
-            twin_loss = ((fwd_vis - bwd_vis_inv) ** 2).mean(2)
-            twin_loss = twin_loss.mean(1)
-            # sum over timesteps (ratio number of layers)
-            twin_loss = twin_loss.sum(0) / nlayers
+            twin_loss = ((fwd_vis - bwd_vis_inv) ** 2).sum(0).mean()
             twin_loss = twin_loss * twin
             all_loss = fwd_loss + bwd_loss + twin_loss
             all_loss.backward()
