@@ -19,7 +19,7 @@ seed = 1234
 rng = np.random.RandomState(seed)
 
 
-def get_epoch_iterator(nbatch, seq_width, min_len=2, max_len=20):
+def get_epoch_iterator(nbatch, seq_width, min_len=1, max_len=20):
     for batch_num in range(500):
         # All batches have the same sequence length
         seq_len = rng.randint(min_len, max_len)
@@ -30,7 +30,7 @@ def get_epoch_iterator(nbatch, seq_width, min_len=2, max_len=20):
         out_fwd = seq
         out_bwd = seq[::-1].copy()
         inp_fwd[:seq_len, :, :seq_width] = seq
-        inp_bwd[:seq_len, :, :seq_width] = seq[::-1].copy()
+        inp_bwd[:seq_len, :, :seq_width] = seq
         inp_fwd[seq_len, :, seq_width] = 1.0    # delimiter in our control channel
         inp_bwd[seq_len, :, seq_width] = 1.0    # delimiter in our control channel
         yield inp_fwd, out_fwd, inp_bwd, out_bwd
@@ -64,7 +64,7 @@ class MyLSTM(nn.Module):
             inputs.append(vis)
         hidden = (torch.cat([s[0] for s in states], 0),
                   torch.cat([s[1] for s in states], 0))
-        return output[0], torch.cat(output, 0), hidden
+        return output[-1], torch.stack(output, 1), hidden
 
 
 class Model(nn.Module):
@@ -78,8 +78,8 @@ class Model(nn.Module):
         self.bwd_rnn = MyLSTM(inp_dim + 1, rnn_dim, nlayers)
         if self.deep_out:
             # additional layer before the output
-            self.fwd_prj_prev = nn.Linear(300, 512)
-            self.bwd_prj_prev = nn.Linear(300, 512)
+            self.fwd_prj_prev = nn.Linear(inp_dim + 1, 512)
+            self.bwd_prj_prev = nn.Linear(inp_dim + 1, 512)
             self.fwd_prj_out = nn.Linear(rnn_dim, 512)
             self.bwd_prj_out = nn.Linear(rnn_dim, 512)
         self.fwd_out = nn.Sequential(
@@ -132,15 +132,15 @@ class Model(nn.Module):
         # transform forward with affine
         twin_vis = vis
         if forward:
-            vis_ = vis.view(vis.size(0) * bsize, self.rnn_dim)
+            vis_ = vis.view(out.size(0) * self.nlayers * bsize, self.rnn_dim)
             vis_ = self.fwd_aff(vis_)
-            twin_vis = vis_.view(vis.size(0), bsize, self.rnn_dim)
+            twin_vis = vis_.view(out.size(0), self.nlayers, bsize, self.rnn_dim)
         return out_2d, twin_vis, hidden, enc_x
 
     def forward(self, fwd_x, bwd_x, hidden):
         #
-        fwd_out, fwd_vis, fwd_hid, _ = self.rnn(fwd_x, hidden)
-        bwd_out, bwd_vis, bwd_hid, _ = self.rnn(bwd_x, hidden, forward=False)
+        fwd_out, _, fwd_hid, _ = self.rnn(fwd_x, hidden)
+        bwd_out, _, bwd_hid, _ = self.rnn(bwd_x, hidden, forward=False)
         # decode
         fwd_out, fwd_vis, _, _ = self.rnn(fwd_x[:-1] * 0., fwd_hid)
         bwd_out, bwd_vis, _, _ = self.rnn(bwd_x[:-1] * 0., bwd_hid, forward=False)
@@ -168,13 +168,13 @@ def evaluate(model, bsz, seq_width):
 
 @click.command()
 @click.option('--expname', default='copy_logs')
-@click.option('--nlayers', default=1)
+@click.option('--nlayers', default=3)
 @click.option('--seq_width', default=8)
-@click.option('--num_epochs', default=50)
+@click.option('--num_epochs', default=500)
 @click.option('--rnn_dim', default=512)
 @click.option('--deep_out', is_flag=True)
 @click.option('--bsz', default=20)
-@click.option('--lr', default=0.0002)
+@click.option('--lr', default=0.001)
 @click.option('--twin', default=0.)
 def train(expname, nlayers, seq_width, num_epochs,
           rnn_dim, deep_out, bsz, lr, twin):
@@ -209,9 +209,12 @@ def train(expname, nlayers, seq_width, num_epochs,
             oub = Variable(torch.from_numpy(oub)).float().cuda()
             opt.zero_grad()
             fwd_out, bwd_out, fwd_vis, bwd_vis = \
-                model(inf, inb, hidden)
+                    model(inf, inb, hidden)
             assert fwd_out.size(0) == ouf.size(0)
             assert bwd_out.size(0) == oub.size(0)
+            assert bwd_vis.size(0) == oub.size(0)
+            assert fwd_vis.size(0) == oub.size(0)
+            assert fwd_vis.size(1) == nlayers
             fwd_loss = binary_crossentropy(ouf, fwd_out).mean()
             bwd_loss = binary_crossentropy(oub, bwd_out).mean()
             bwd_loss = bwd_loss * (twin > 0.)
@@ -219,15 +222,13 @@ def train(expname, nlayers, seq_width, num_epochs,
             idx = np.arange(bwd_vis.size(0))[::-1].tolist()
             idx = torch.LongTensor(idx)
             idx = Variable(idx).cuda()
+
             bwd_vis_inv = bwd_vis.index_select(0, idx)
             # interrupt gradient here
             bwd_vis_inv = bwd_vis_inv.detach()
 
             # mean over batch, over dimensions
-            twin_loss = ((fwd_vis - bwd_vis_inv) ** 2).mean(2)
-            twin_loss = twin_loss.mean(1)
-            # sum over timesteps (ratio number of layers)
-            twin_loss = twin_loss.sum(0) / nlayers
+            twin_loss = ((fwd_vis - bwd_vis_inv) ** 2).sum(0).mean()
             twin_loss = twin_loss * twin
             all_loss = fwd_loss + bwd_loss + twin_loss
             all_loss.backward()

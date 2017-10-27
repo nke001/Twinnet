@@ -63,7 +63,7 @@ class MyLSTM(nn.Module):
             inputs.append(vis)
         hidden = (torch.cat([s[0] for s in states], 0),
                   torch.cat([s[1] for s in states], 0))
-        return output[0], torch.cat(output, 0), hidden
+        return output[-1], torch.stack(output, 0), hidden
 
 
 class Model(nn.Module):
@@ -245,7 +245,9 @@ def train(expname, nlayers, num_epochs, rnn_dim, deep_out, bsz, lr, twin):
             # interrupt gradient here
             bwd_vis_inv = bwd_vis_inv.detach()
 
-            twin_loss = ((fwd_vis - bwd_vis_inv) ** 2).mean()
+            twin_loss = ((fwd_vis - bwd_vis_inv) ** 2).mean(2)
+            twin_loss = twin_loss.mean(1)
+            twin_loss = twin_loss.sum(0) / nlayers
             twin_loss = twin_loss * twin
             all_loss = fwd_loss + bwd_loss + twin_loss
             all_loss.backward()
