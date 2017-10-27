@@ -19,7 +19,7 @@ seed = 1234
 rng = np.random.RandomState(seed)
 
 
-def get_epoch_iterator(nbatch, X, Y=None, show=0.5):
+def get_epoch_iterator(nbatch, X, Y=None):
     ndata = X.shape[0]
     samples = rng.permutation(np.arange(ndata))
     for b in range(0, ndata, nbatch):
@@ -125,7 +125,7 @@ def evaluate(model, bsz, data, npixels_visible):
     valid_loss = []
     for x in get_epoch_iterator(bsz, data):
         x = Variable(torch.from_numpy(x)).long().cuda()
-        vis_x = x[:max(npixels_visible, 1)]
+        vis_x = x[:npixels_visible]
         hid_x = x[npixels_visible:]
         x_ = torch.cat((hid_x[:1] * 0, hid_x), 0)
         inp = x_[:-1]
@@ -192,13 +192,12 @@ def train(expname, nlayers, visibility, num_epochs,
         print('Epoch {}: ({})'.format(epoch, model_id.upper()))
         for x in get_epoch_iterator(bsz, train_x, show=visibility):
             x = Variable(torch.from_numpy(x)).long().cuda()
-            vis_x = x[:min(npixels_visible, 1)]
+            vis_x = x[:npixels_visible]
             hid_x = x[npixels_visible:]
 
             x_ = torch.cat((hid_x[:1] * 0, hid_x), 0)
             fwd_inp = x_[:-1]
             fwd_trg = x_[1:].float()
-
             bx_ = hid_x.index_select(0, idx)
             bx_ = torch.cat((hid_x[:1] * 0, bx_), 0)
             bwd_inp = bx_[:-1]
