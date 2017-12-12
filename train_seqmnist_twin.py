@@ -117,6 +117,9 @@ def evaluate(model, bsz, data_x, data_y):
 
 @click.command()
 @click.option('--expname', default='mnist_logs')
+@click.option('--logdir', default=None)
+@click.option('--modeldir', default=None)
+@click.option('--datadir', default='./mnist/data')
 @click.option('--nlayers', default=2)
 @click.option('--num_epochs', default=50)
 @click.option('--rnn_dim', default=512)
@@ -124,22 +127,24 @@ def evaluate(model, bsz, data_x, data_y):
 @click.option('--lr', default=0.001)
 @click.option('--twin', default=0.)
 @click.option('--dont_disconnect', is_flag=True)
-def train(expname, nlayers, num_epochs, rnn_dim, bsz, lr, twin, dont_disconnect):
+def train(expname, logdir, modeldir, datadir, nlayers, num_epochs, rnn_dim, bsz, lr, twin, dont_disconnect):
     # use hugo's binarized MNIST
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
     log_interval = 100
-    model_id = 'mnist_twin{}_nl{}_dim{}_dontdis{}'.format(twin, nlayers, rnn_dim, dont_disconnect)
-    if not os.path.exists(expname):
-        os.makedirs(expname)
-    log_file_name = os.path.join(expname, model_id + '.txt')
-    model_file_name = os.path.join(expname, model_id + '.pt')
+    model_id = 'mnist_twin{}_nl{}_dim{}_ddis{}_seed{}'.format(twin, nlayers, rnn_dim, dont_disconnect, seed)
+    if logdir is None or modeldir is None:
+        logdir = expname
+        modeldir = expname
+        if not os.path.exists(expname):
+            os.makedirs(expname)
+    log_file_name = os.path.join(logdir, model_id + '.txt')
+    model_file_name = os.path.join(modeldir, model_id + '.pt')
     log_file = open(log_file_name, 'w')
 
     # Hugo's version, for compatibility with SOTA.
-    train_x, valid_x, test_x = \
-        load.load_binarized_mnist('./mnist/data')
+    train_x, valid_x, test_x = load.load_binarized_mnist(datadir)
     train_y = None
     valid_y = None
     test_y = None
