@@ -40,25 +40,18 @@ def binary_crossentropy(x, p):
                        torch.log(1 - p + 1e-6) * (1. - x)), 0)
 
 class Model(nn.Module):
-    def __init__(self, rnn_dim, nlayers, deep_out=True):
+    def __init__(self, rnn_dim, nlayers):
         super(Model, self).__init__()
         self.rnn_dim = rnn_dim
         self.nlayers = nlayers
-        self.deep_out = deep_out
         self.embed = nn.Embedding(2, 300)
         self.fwd_rnn = nn.LSTM(300, rnn_dim, nlayers)
         self.bwd_rnn = nn.LSTM(300, rnn_dim, nlayers)
-        if self.deep_out:
-            # additional layer before the output
-            self.fwd_prj_prev = nn.Linear(300, 512)
-            self.bwd_prj_prev = nn.Linear(300, 512)
-            self.fwd_prj_out = nn.Linear(rnn_dim, 512)
-            self.bwd_prj_out = nn.Linear(rnn_dim, 512)
         self.fwd_out = nn.Sequential(
-            nn.Linear(512 if deep_out else rnn_dim, 1),
+            nn.Linear(rnn_dim, 1),
             nn.Sigmoid())
         self.bwd_out = nn.Sequential(
-            nn.Linear(512 if deep_out else rnn_dim, 1),
+            nn.Linear(rnn_dim, 1),
             nn.Sigmoid())
         self.fwd_aff = nn.Linear(rnn_dim, rnn_dim)
 
@@ -71,7 +64,6 @@ class Model(nn.Module):
         state = {
             'nlayers': self.nlayers,
             'rnn_dim': self.rnn_dim,
-            'deep_out': self.deep_out,
             'state_dict': self.state_dict()
         }
         torch.save(state, filename)
@@ -80,8 +72,7 @@ class Model(nn.Module):
     def load(cls, filename):
         state = torch.load(filename)
         model = Model(
-            state['rnn_dim'], state['nlayers'],
-            deep_out=state['deep_out'])
+            state['rnn_dim'], state['nlayers'])
         model.load_state_dict(state['state_dict'])
         return model
 
@@ -94,12 +85,6 @@ class Model(nn.Module):
         enc_x = x
         out, hidden = rnn_mod(x, hidden)
         out_2d = out.view(out.size(0) * bsize, self.rnn_dim)
-        # compute deep output layer or simple output
-        if self.deep_out:
-            x_ = x.view(out.size(0) * bsize, x.size(2))
-            prv_mod = self.fwd_prj_prev if forward else self.bwd_prj_prev
-            prj_mod = self.fwd_prj_out if forward else self.bwd_prj_out
-            out_2d = F.leaky_relu(prv_mod(x_) + prj_mod(out_2d), 0.3, False)
         out_2d = out_mod(out_2d)
         out_2d = out_2d.view(out.size(0), bsize)
         # transform forward with affine
@@ -138,18 +123,17 @@ def evaluate(model, bsz, data, npixels_visible):
 
 
 @click.command()
-@click.option('--expname', default='inpaint_logs')
+@click.option('--expname', default='impaint_logs')
 @click.option('--nlayers', default=3)
 @click.option('--visibility', default=0.5)
 @click.option('--num_epochs', default=20)
 @click.option('--rnn_dim', default=512)
-@click.option('--deep_out', is_flag=True)
 @click.option('--bsz', default=20)
 @click.option('--lr', default=0.0002)
 @click.option('--twin', default=0.)
+@click.option('--dont_disconnect', is_flag=True)
 def train(expname, nlayers, visibility, num_epochs,
-          rnn_dim, deep_out, bsz, lr, twin):
-    assert not deep_out
+          rnn_dim, bsz, lr, twin, dont_disconnect):
     assert visibility <= 1.0
 
     torch.manual_seed(seed)
@@ -158,8 +142,8 @@ def train(expname, nlayers, visibility, num_epochs,
     npixels_hidden = int((1. - visibility) * 784)
     print('Pixels visible: {}'.format(npixels_visible))
     log_interval = 100
-    model_id = 'inpaint_twin{}_do{}_nl{}_dim{}_vis{}'.format(
-        twin, deep_out, nlayers, rnn_dim, visibility)
+    model_id = 'inpaint_twin{}_nl{}_dim{}_dontdis{}_vis{}'.format(
+            twin, nlayers, rnn_dim, dont_disconnect, visibility)
     if not os.path.exists(expname):
         os.makedirs(expname)
     log_file_name = os.path.join(expname, model_id + '.txt')
@@ -170,7 +154,7 @@ def train(expname, nlayers, visibility, num_epochs,
             load.load_binarized_mnist('./mnist/data')
     print(train_x[0])
 
-    model = Model(rnn_dim, nlayers, deep_out=deep_out)
+    model = Model(rnn_dim, nlayers)
     model.cuda()
     hidden = model.init_hidden(bsz)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
@@ -198,6 +182,8 @@ def train(expname, nlayers, visibility, num_epochs,
             x_ = torch.cat((hid_x[:1] * 0, hid_x), 0)
             fwd_inp = x_[:-1]
             fwd_trg = x_[1:].float()
+            
+            # invert pixels for backward pass
             bx_ = hid_x.index_select(0, idx)
             bx_ = torch.cat((hid_x[:1] * 0, bx_), 0)
             bwd_inp = bx_[:-1]
@@ -216,7 +202,8 @@ def train(expname, nlayers, visibility, num_epochs,
             # invert
             bwd_vis_inv = bwd_vis.index_select(0, idx)
             # interrupt gradient here
-            bwd_vis_inv = bwd_vis_inv.detach()
+            if dont_disconnect is False:
+                bwd_vis_inv = bwd_vis_inv.detach()
 
             # mean over batch, over dimensions
             twin_loss = ((fwd_vis - bwd_vis_inv) ** 2).sum(0).mean()
