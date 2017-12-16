@@ -13,6 +13,7 @@ import random
 from itertools import chain
 import load
 import torch.nn.functional as F
+from viz import Logger
 
 # set a bunch of seeds
 seed = 1234
@@ -33,19 +34,19 @@ def get_epoch_iterator(nbatch, X, Y=None):
         x = x.reshape((-1, 784)).transpose(1, 0)
         yield (x, y)
 
-
 def binary_crossentropy(x, p):
     return -torch.sum((torch.log(p + 1e-6) * x +
                        torch.log(1 - p + 1e-6) * (1. - x)), 0)
 
 class Model(nn.Module):
-    def __init__(self, rnn_dim, nlayers):
+    def __init__(self, rnn_dim, nlayers, dropout=0.):
         super(Model, self).__init__()
         self.rnn_dim = rnn_dim
+        self.dropout = dropout
         self.nlayers = nlayers
         self.embed = nn.Embedding(2, 300)
-        self.fwd_rnn = nn.LSTM(300, rnn_dim, nlayers)
-        self.bwd_rnn = nn.LSTM(300, rnn_dim, nlayers)
+        self.fwd_rnn = nn.LSTM(300, rnn_dim, nlayers, dropout=dropout)
+        self.bwd_rnn = nn.LSTM(300, rnn_dim, nlayers, dropout=dropout)
         self.fwd_out = nn.Sequential(
             nn.Linear(rnn_dim, 1),
             nn.Sigmoid())
@@ -63,6 +64,7 @@ class Model(nn.Module):
         state = {
             'nlayers': self.nlayers,
             'rnn_dim': self.rnn_dim,
+            'dropout': self.dropout,
             'state_dict': self.state_dict()
         }
         torch.save(state, filename)
@@ -71,7 +73,7 @@ class Model(nn.Module):
     def load(cls, filename):
         state = torch.load(filename)
         model = Model(
-            state['rnn_dim'], state['nlayers'])
+            state['rnn_dim'], state['nlayers'], dropout=state['dropout'])
         model.load_state_dict(state['state_dict'])
         return model
 
@@ -121,19 +123,21 @@ def evaluate(model, bsz, data_x, data_y):
 @click.option('--modeldir', default=None)
 @click.option('--datadir', default='./mnist/data')
 @click.option('--nlayers', default=2)
+@click.option('--dropout', default=0.0)
 @click.option('--num_epochs', default=50)
 @click.option('--rnn_dim', default=512)
 @click.option('--bsz', default=20)
 @click.option('--lr', default=0.001)
 @click.option('--twin', default=0.)
 @click.option('--dont_disconnect', is_flag=True)
-def train(expname, logdir, modeldir, datadir, nlayers, num_epochs, rnn_dim, bsz, lr, twin, dont_disconnect):
+def train(expname, logdir, modeldir, datadir, nlayers, dropout, num_epochs, rnn_dim, bsz, lr, twin, dont_disconnect):
     # use hugo's binarized MNIST
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
     log_interval = 100
-    model_id = 'mnist_twin{}_nl{}_dim{}_ddis{}_seed{}'.format(twin, nlayers, rnn_dim, dont_disconnect, seed)
+    model_id = 'mnist_twin{}_nl{}_dim{}_drop{}_ddis{}_seed{}'.format(
+            twin, nlayers, rnn_dim, dropout, dont_disconnect, seed)
     if logdir is None or modeldir is None:
         logdir = expname
         modeldir = expname
@@ -141,6 +145,8 @@ def train(expname, logdir, modeldir, datadir, nlayers, num_epochs, rnn_dim, bsz,
             os.makedirs(expname)
     log_file_name = os.path.join(logdir, model_id + '.txt')
     model_file_name = os.path.join(modeldir, model_id + '.pt')
+    pkl_file_name = os.path.join(logdir, model_id + '.pkl') 
+    logger = Logger(pkl_file_name)
     log_file = open(log_file_name, 'w')
 
     # Hugo's version, for compatibility with SOTA.
@@ -152,7 +158,7 @@ def train(expname, logdir, modeldir, datadir, nlayers, num_epochs, rnn_dim, bsz,
     # First example looks like...
     print(train_x[0])
 
-    model = Model(rnn_dim, nlayers)
+    model = Model(rnn_dim, nlayers, dropout)
     model.cuda()
     hidden = model.init_hidden(bsz)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
@@ -222,6 +228,15 @@ def train(expname, logdir, modeldir, datadir, nlayers, num_epochs, rnn_dim, bsz,
                     b_twin_loss / log_interval,
                     b_bwd_loss / log_interval,
                     log_interval / (s - t))
+                info = {
+                    'fwd_loss/train': b_fwd_loss / log_interval,
+                    'bwd_loss/train': b_bwd_loss / log_interval,
+                    'twin_loss/train': b_twin_loss / log_interval
+                }
+                for tag, value in info.items():
+                    logger.scalar_summary(tag, value)
+                logger.flush()
+
                 b_all_loss = 0.
                 b_fwd_loss = 0.
                 b_bwd_loss = 0.
@@ -244,6 +259,14 @@ def train(expname, logdir, modeldir, datadir, nlayers, num_epochs, rnn_dim, bsz,
         print(log_line)
         log_file.write(log_line + '\n')
         log_file.flush()
+
+        info = {
+                'fwd_loss/valid': val_loss,
+                'fwd_loss/test': test_loss
+                }
+        for tag, value in info.items():
+            logger.scalar_summary(tag, value)
+        logger.flush()
 
         if old_valid_loss > val_loss:
             old_valid_loss = val_loss
